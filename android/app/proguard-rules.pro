@@ -1,10 +1,43 @@
-# Add project specific ProGuard rules here.
-# By default, the flags in this file are appended to flags specified
-# in /usr/local/Cellar/android-sdk/24.3.3/tools/proguard/proguard-android.txt
-# You can edit the include path and order by changing the proguardFiles
-# directive in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ==============================================================================
+# NexFile ProGuard / R8 Optimization & Keep Rules
+# ==============================================================================
 
-# Add any project specific keep options here:
+# React Native & Hermes Core Keep Rules
+-keep class com.facebook.react.** { *; }
+-keep class com.facebook.jni.** { *; }
+-keep class com.facebook.hermes.** { *; }
+-keepclassmembers class * {
+    @com.facebook.react.bridge.ReactMethod *;
+    @com.facebook.react.bridge.ReactContextBaseJavaModule *;
+    @com.facebook.react.uimanager.annotations.ReactProp *;
+    @com.facebook.react.uimanager.annotations.ReactPropGroup *;
+}
+
+# NexFile Custom Native Modules & Package
+-keep class com.nexfile.** { *; }
+-keepclassmembers class com.nexfile.** {
+    public <init>(...);
+    @com.facebook.react.bridge.ReactMethod <methods>;
+}
+
+# Android Jetpack, Security & Biometrics
+-keep class androidx.biometric.** { *; }
+-keep class androidx.security.crypto.** { *; }
+-keep class androidx.core.content.FileProvider { *; }
+-keep class androidx.documentfile.provider.** { *; }
+
+# OkHttp & Networking
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-keepattributes Signature
+-keepattributes *Annotation*
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
+
+# Lucide Icons & Vector Assets
+-keep class com.horcrux.svg.** { *; }
+
+# Clean build warnings
+-dontwarn javax.annotation.**
+-dontwarn org.checkerframework.**
+-dontwarn com.google.errorprone.annotations.**

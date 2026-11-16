@@ -1,45 +1,29 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
+import React, { useEffect } from 'react';
+import { StatusBar } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useThemeStore } from './src/app/store/useThemeStore';
+import { RootNavigator } from './src/app/navigation/RootNavigator';
+import { requestStoragePermissions } from './src/services/permissions/permissionsService';
+import { NativeBridgeService } from './src/services/filesystem/nativeBridge';
 
-import { NewAppScreen } from '@react-native/new-app-screen';
-import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
-import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
+function App(): React.JSX.Element {
+  const { mode } = useThemeStore();
 
-function App() {
-  const isDarkMode = useColorScheme() === 'dark';
+  useEffect(() => {
+    // Request initial permissions on app launch
+    requestStoragePermissions();
+    // Enable full-screen immersive mode: hides top status bar & bottom navigation bar
+    NativeBridgeService.setImmersiveMode(true);
+  }, []);
+
+  const barStyle = mode === 'light' ? 'dark-content' : 'light-content';
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
+      <StatusBar hidden={true} barStyle={barStyle} />
+      <RootNavigator />
     </SafeAreaProvider>
   );
 }
-
-function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
-
-  return (
-    <View style={styles.container}>
-      <NewAppScreen
-        templateFileName="App.tsx"
-        safeAreaInsets={safeAreaInsets}
-      />
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-});
 
 export default App;

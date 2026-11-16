@@ -1,0 +1,236 @@
+import { FileItem, FileCategory, SortField, SortOrder, StorageVolume, RecycleBinItem } from '../../types/file';
+import { NativeBridgeService, SaveImageOptions } from './nativeBridge';
+import { getCategoryFromExtension } from '../../utils/fileTypes';
+import { extractParentFolder } from '../../utils/formatters';
+
+class FileService {
+  private favorites: Set<string> = new Set();
+  private recycleBin: RecycleBinItem[] = [];
+
+  async getStorageVolumes(): Promise<StorageVolume[]> {
+    return await NativeBridgeService.getStorageVolumes();
+  }
+
+  async listDirectory(path: string, showHidden: boolean = false): Promise<FileItem[]> {
+    const items = await NativeBridgeService.listFiles(path, showHidden);
+    return items.map((item) => ({
+      ...item,
+      isFavorite: this.favorites.has(item.path),
+    }));
+  }
+
+  async getAllImages(): Promise<FileItem[]> {
+    return await NativeBridgeService.getAllImages();
+  }
+
+  async getRecentFiles(limit: number = 500): Promise<FileItem[]> {
+    const allFiles = await NativeBridgeService.getRecentFiles(limit);
+    return allFiles
+      .sort((a, b) => b.lastModified - a.lastModified)
+      .map((item) => ({
+        ...item,
+        parentFolder: item.parentFolder || extractParentFolder(item.path),
+        isFavorite: this.favorites.has(item.path),
+      }));
+  }
+
+  async getFilesByCategory(category: FileCategory): Promise<FileItem[]> {
+    let allFiles = await NativeBridgeService.getRecentFiles(1000);
+    if (!allFiles || allFiles.length === 0) {
+      allFiles = NativeBridgeService.getAllMockFiles();
+    }
+    const filtered = category === 'all'
+      ? allFiles
+      : allFiles.filter((file) => {
+          if (category === 'downloads') {
+            return file.path.toLowerCase().includes('/download');
+          }
+          if (category === 'whatsapp') {
+            return (
+              file.path.toLowerCase().includes('whatsapp') ||
+              file.path.toLowerCase().includes('com.whatsapp')
+            );
+          }
+          if (category === 'bluetooth') {
+            return file.path.toLowerCase().includes('/bluetooth');
+          }
+          return getCategoryFromExtension(file.extension) === category;
+        });
+
+    return filtered
+      .sort((a, b) => b.lastModified - a.lastModified)
+      .map((item) => ({
+        ...item,
+        parentFolder: item.parentFolder || extractParentFolder(item.path),
+        isFavorite: this.favorites.has(item.path),
+      }));
+  }
+
+  async searchFiles(query: string, rootPath?: string, extension?: string): Promise<FileItem[]> {
+    const allFiles = NativeBridgeService.getAllMockFiles();
+    const cleanQuery = query.toLowerCase().trim();
+    const cleanExt = extension ? extension.toLowerCase().replace(/^\./, '') : null;
+
+    return allFiles.filter((file) => {
+      if (rootPath && !file.path.startsWith(rootPath)) return false;
+      if (cleanExt && file.extension.toLowerCase() !== cleanExt) return false;
+      if (!cleanQuery) return true;
+      return file.name.toLowerCase().includes(cleanQuery);
+    });
+  }
+
+  sortFiles(items: FileItem[], field: SortField, order: SortOrder): FileItem[] {
+    return [...items].sort((a, b) => {
+      // Folders always first
+      if (a.isDirectory && !b.isDirectory) return -1;
+      if (!a.isDirectory && b.isDirectory) return 1;
+
+      let comparison = 0;
+      switch (field) {
+        case 'name':
+          comparison = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+          break;
+        case 'date':
+          comparison = a.lastModified - b.lastModified;
+          break;
+        case 'size':
+          comparison = a.size - b.size;
+          break;
+        case 'type':
+          comparison = (a.extension || '').localeCompare(b.extension || '');
+          break;
+      }
+      return order === 'asc' ? comparison : -comparison;
+    });
+  }
+
+  async createFolder(parentPath: string, folderName: string): Promise<string> {
+    return await NativeBridgeService.createDirectory(parentPath, folderName);
+  }
+
+  async rename(path: string, newName: string): Promise<string> {
+    const newPath = await NativeBridgeService.renameItem(path, newName);
+    if (this.favorites.has(path)) {
+      this.favorites.delete(path);
+      this.favorites.add(newPath);
+    }
+    return newPath;
+  }
+
+  async batchRename(
+    items: FileItem[],
+    pattern: { prefix?: string; suffix?: string; startNumber?: number; replaceFrom?: string; replaceTo?: string }
+  ): Promise<string[]> {
+    const renamedPaths: string[] = [];
+    let count = pattern.startNumber ?? 1;
+
+    for (const item of items) {
+      let ext = item.extension ? `.${item.extension}` : '';
+      let baseName = item.name.replace(new RegExp(`${ext}$`), '');
+
+      if (pattern.replaceFrom !== undefined && pattern.replaceTo !== undefined) {
+        baseName = baseName.split(pattern.replaceFrom).join(pattern.replaceTo);
+      }
+
+      let newName = '';
+      if (pattern.prefix) newName += pattern.prefix;
+      newName += baseName;
+      if (pattern.startNumber !== undefined) {
+        newName += `_${count}`;
+        count++;
+      }
+      if (pattern.suffix) newName += pattern.suffix;
+      newName += ext;
+
+      const newPath = await this.rename(item.path, newName);
+      renamedPaths.push(newPath);
+    }
+
+    return renamedPaths;
+  }
+
+  async delete(path: string, useRecycleBin: boolean = true): Promise<boolean> {
+    if (useRecycleBin) {
+      const all = NativeBridgeService.getAllMockFiles(true);
+      const target = all.find((f) => f.path === path);
+      if (target) {
+        this.recycleBin.push({
+          id: `trash_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          originalPath: target.path,
+          trashPath: `/storage/emulated/0/.trash/${target.name}`,
+          name: target.name,
+          deletedAt: Date.now(),
+          size: target.size,
+          isDirectory: target.isDirectory,
+        });
+      }
+    }
+    return await NativeBridgeService.deleteItem(path);
+  }
+
+  async copy(sourcePath: string, destDirPath: string): Promise<string> {
+    return await NativeBridgeService.copyItem(sourcePath, destDirPath);
+  }
+
+  async move(sourcePath: string, destDirPath: string): Promise<string> {
+    return await NativeBridgeService.moveItem(sourcePath, destDirPath);
+  }
+
+  async calculateChecksum(filePath: string, algorithm: 'MD5' | 'SHA-256' = 'SHA-256'): Promise<string> {
+    return await NativeBridgeService.calculateChecksum(filePath, algorithm);
+  }
+
+  async setAsWallpaper(filePath: string): Promise<boolean> {
+    return await NativeBridgeService.setAsWallpaper(filePath);
+  }
+
+  async getImageDimensions(filePath: string): Promise<{ width: number; height: number; mimeType?: string } | null> {
+    return await NativeBridgeService.getImageDimensions(filePath);
+  }
+
+  async openFile(filePath: string, mimeType?: string): Promise<boolean> {
+    return await NativeBridgeService.openFile(filePath, mimeType);
+  }
+
+  toggleFavorite(path: string): boolean {
+    if (this.favorites.has(path)) {
+      this.favorites.delete(path);
+      return false;
+    } else {
+      this.favorites.add(path);
+      return true;
+    }
+  }
+
+  isFavorite(path: string): boolean {
+    return this.favorites.has(path);
+  }
+
+  getRecycleBinItems(): RecycleBinItem[] {
+    return [...this.recycleBin];
+  }
+
+  restoreFromRecycleBin(trashId: string): boolean {
+    const index = this.recycleBin.findIndex((i) => i.id === trashId);
+    if (index !== -1) {
+      this.recycleBin.splice(index, 1);
+      return true;
+    }
+    return false;
+  }
+
+  async saveEditedImage(
+    sourcePath: string,
+    destPath: string,
+    options: SaveImageOptions
+  ): Promise<{ success: boolean; path: string; name: string; size: number }> {
+    return NativeBridgeService.saveEditedImage(sourcePath, destPath, options);
+  }
+
+  emptyRecycleBin(): void {
+    this.recycleBin = [];
+  }
+}
+
+export const fileService = new FileService();
+
