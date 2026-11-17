@@ -11,6 +11,8 @@ export type RootTabParamList = {
 export type RootStackParamList = {
   MainTabs: undefined;
   ImagesGalleryScreen: undefined;
+  VideosGalleryScreen: undefined;
+  CategoryFilesScreen: { category: string };
   SearchScreen: { initialQuery?: string; category?: string } | undefined;
   FileDetailsModal: { file: FileItem };
   ChecksumModal: { file: FileItem };

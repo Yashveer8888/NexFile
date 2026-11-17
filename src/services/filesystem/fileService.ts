@@ -1,11 +1,28 @@
 import { FileItem, FileCategory, SortField, SortOrder, StorageVolume, RecycleBinItem } from '../../types/file';
 import { NativeBridgeService, SaveImageOptions } from './nativeBridge';
-import { getCategoryFromExtension } from '../../utils/fileTypes';
+import { getCategoryFromExtension, isUsefulRecentFile, isJunkOrSystemFile } from '../../utils/fileTypes';
 import { extractParentFolder } from '../../utils/formatters';
 
 class FileService {
   private favorites: Set<string> = new Set();
   private recycleBin: RecycleBinItem[] = [];
+  private favoritesLoaded: boolean = false;
+
+  async initFavorites(): Promise<void> {
+    if (this.favoritesLoaded) return;
+    try {
+      const raw = await NativeBridgeService.getPreference('NEX_FAVORITES', '[]');
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          this.favorites = new Set(arr);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load favorites preference:', e);
+    }
+    this.favoritesLoaded = true;
+  }
 
   async getStorageVolumes(): Promise<StorageVolume[]> {
     return await NativeBridgeService.getStorageVolumes();
@@ -23,9 +40,14 @@ class FileService {
     return await NativeBridgeService.getAllImages();
   }
 
+  async getAllVideos(): Promise<FileItem[]> {
+    return await NativeBridgeService.getAllVideos();
+  }
+
   async getRecentFiles(limit: number = 500): Promise<FileItem[]> {
     const allFiles = await NativeBridgeService.getRecentFiles(limit);
     return allFiles
+      .filter((file) => isUsefulRecentFile(file))
       .sort((a, b) => b.lastModified - a.lastModified)
       .map((item) => ({
         ...item,
@@ -35,13 +57,14 @@ class FileService {
   }
 
   async getFilesByCategory(category: FileCategory): Promise<FileItem[]> {
-    let allFiles = await NativeBridgeService.getRecentFiles(1000);
+    let allFiles = await NativeBridgeService.getRecentFiles(2500);
     if (!allFiles || allFiles.length === 0) {
       allFiles = NativeBridgeService.getAllMockFiles();
     }
     const filtered = category === 'all'
-      ? allFiles
+      ? allFiles.filter((file) => isUsefulRecentFile(file))
       : allFiles.filter((file) => {
+          if (!isUsefulRecentFile(file)) return false;
           if (category === 'downloads') {
             return file.path.toLowerCase().includes('/download');
           }
@@ -106,6 +129,18 @@ class FileService {
 
   async createFolder(parentPath: string, folderName: string): Promise<string> {
     return await NativeBridgeService.createDirectory(parentPath, folderName);
+  }
+
+  async createFile(parentPath: string, fileName: string, content: string = ''): Promise<string> {
+    return await NativeBridgeService.createFile(parentPath, fileName, content);
+  }
+
+  async openWith(filePath: string): Promise<boolean> {
+    return await NativeBridgeService.openWith(filePath);
+  }
+
+  async shareFiles(filePaths: string[]): Promise<boolean> {
+    return await NativeBridgeService.shareFiles(filePaths);
   }
 
   async rename(path: string, newName: string): Promise<string> {
@@ -184,6 +219,10 @@ class FileService {
     return await NativeBridgeService.setAsWallpaper(filePath);
   }
 
+  async openGoogleLens(filePath: string): Promise<boolean> {
+    return await NativeBridgeService.openGoogleLens(filePath);
+  }
+
   async getImageDimensions(filePath: string): Promise<{ width: number; height: number; mimeType?: string } | null> {
     return await NativeBridgeService.getImageDimensions(filePath);
   }
@@ -193,13 +232,23 @@ class FileService {
   }
 
   toggleFavorite(path: string): boolean {
+    let result = false;
     if (this.favorites.has(path)) {
       this.favorites.delete(path);
-      return false;
+      result = false;
     } else {
       this.favorites.add(path);
-      return true;
+      result = true;
     }
+    NativeBridgeService.savePreference(
+      'NEX_FAVORITES',
+      JSON.stringify(Array.from(this.favorites))
+    ).catch((err) => console.warn('Failed saving favorites:', err));
+    return result;
+  }
+
+  getFavorites(): string[] {
+    return Array.from(this.favorites);
   }
 
   isFavorite(path: string): boolean {
@@ -229,6 +278,62 @@ class FileService {
 
   emptyRecycleBin(): void {
     this.recycleBin = [];
+  }
+
+  async setScreenBrightness(brightness: number): Promise<boolean> {
+    return NativeBridgeService.setScreenBrightness(brightness);
+  }
+
+  async getScreenBrightness(): Promise<number> {
+    return NativeBridgeService.getScreenBrightness();
+  }
+
+  async setDeviceVolume(volume: number): Promise<boolean> {
+    return NativeBridgeService.setDeviceVolume(volume);
+  }
+
+  async getDeviceVolume(): Promise<number> {
+    return NativeBridgeService.getDeviceVolume();
+  }
+
+  async captureVideoFrame(filePath: string, timeMs: number): Promise<string> {
+    return NativeBridgeService.captureVideoFrame(filePath, timeMs);
+  }
+
+  async getVideoThumbnailAt(filePath: string, timeMs: number): Promise<string | null> {
+    return NativeBridgeService.getVideoThumbnailAt(filePath, timeMs);
+  }
+
+  async enterPipMode(aspectRatioNum: number = 16, aspectRatioDen: number = 9): Promise<boolean> {
+    return NativeBridgeService.enterPipMode(aspectRatioNum, aspectRatioDen);
+  }
+
+  async openWithSystemPlayer(filePath: string): Promise<boolean> {
+    return NativeBridgeService.openWithSystemPlayer(filePath);
+  }
+
+  async setScreenOrientation(orientation: 'landscape' | 'portrait' | 'sensor' | 'unspecified'): Promise<boolean> {
+    return NativeBridgeService.setScreenOrientation(orientation);
+  }
+
+  async savePreference(key: string, value: string): Promise<boolean> {
+    return NativeBridgeService.savePreference(key, value);
+  }
+
+  async getPreference(key: string, defaultValue: string = ''): Promise<string> {
+    return NativeBridgeService.getPreference(key, defaultValue);
+  }
+
+  async setImmersiveMode(enable: boolean): Promise<boolean> {
+    return NativeBridgeService.setImmersiveMode(enable);
+  }
+
+  async isBiometricAvailable(): Promise<boolean> {
+    return NativeBridgeService.isBiometricAvailable();
+  }
+
+  async authenticateBiometric(title: string = 'Private Vault', subtitle: string = 'Touch sensor to unlock'): Promise<boolean> {
+    return NativeBridgeService.authenticateBiometric(title, subtitle);
   }
 }
 

@@ -7,6 +7,15 @@ export const DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx',
 export const ARCHIVE_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso', 'tgz']);
 export const APK_EXTENSIONS = new Set(['apk', 'xapk', 'apks']);
 
+export const ALLOWED_RECENT_EXTENSIONS = new Set([
+  ...IMAGE_EXTENSIONS,
+  ...VIDEO_EXTENSIONS,
+  ...AUDIO_EXTENSIONS,
+  ...DOCUMENT_EXTENSIONS,
+  ...ARCHIVE_EXTENSIONS,
+  ...APK_EXTENSIONS,
+]);
+
 export const IGNORED_RECENT_EXTENSIONS = new Set([
   'db',
   'db-wal',
@@ -52,8 +61,8 @@ export function isJunkOrSystemFile(item: { name: string; path?: string; extensio
   const ext = (item.extension || '').toLowerCase().replace(/^\./, '');
   const path = (item.path || '').toLowerCase();
 
-  // Hidden files
-  if (name.startsWith('.')) return true;
+  // Hidden files and Private Vault files (.vault directory or .nvlt files)
+  if (name.startsWith('.') || ext === 'nvlt' || path.includes('/.vault')) return true;
 
   // WhatsApp crypt files (crypt, crypt12, crypt14, crypt15, etc.)
   if (ext.startsWith('crypt') || name.includes('.db.crypt')) return true;
@@ -83,7 +92,15 @@ export function isJunkOrSystemFile(item: { name: string; path?: string; extensio
 
 export function isUsefulRecentFile(item: { isDirectory?: boolean; name: string; path?: string; extension?: string }): boolean {
   if (item.isDirectory) return false;
-  return !isJunkOrSystemFile(item);
+  if (isJunkOrSystemFile(item)) return false;
+
+  let ext = (item.extension || '').toLowerCase().replace(/^\./, '');
+  if (!ext && item.name && item.name.includes('.')) {
+    const parts = item.name.split('.');
+    ext = parts[parts.length - 1].toLowerCase();
+  }
+
+  return ALLOWED_RECENT_EXTENSIONS.has(ext);
 }
 
 export function getCategoryFromExtension(ext: string): FileCategory {
@@ -130,5 +147,22 @@ export function isImageFile(item: { isDirectory?: boolean; extension?: string; m
   if (item.mimeType && item.mimeType.toLowerCase().startsWith('image/')) return true;
   return false;
 }
+
+export function isVideoFile(item: { isDirectory?: boolean; extension?: string; mimeType?: string }): boolean {
+  if (item.isDirectory) return false;
+  const ext = (item.extension || '').toLowerCase().replace(/^\./, '');
+  if (VIDEO_EXTENSIONS.has(ext)) return true;
+  if (item.mimeType && item.mimeType.toLowerCase().startsWith('video/')) return true;
+  return false;
+}
+
+export function isAudioFile(item: { isDirectory?: boolean; extension?: string; mimeType?: string }): boolean {
+  if (item.isDirectory) return false;
+  const ext = (item.extension || '').toLowerCase().replace(/^\./, '');
+  if (AUDIO_EXTENSIONS.has(ext)) return true;
+  if (item.mimeType && item.mimeType.toLowerCase().startsWith('audio/')) return true;
+  return false;
+}
+
 
 

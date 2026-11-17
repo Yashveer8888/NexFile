@@ -214,6 +214,36 @@ export class NativeBridgeService {
     return newPath;
   }
 
+  static async createFile(parentPath: string, fileName: string, content: string = ''): Promise<string> {
+    if (this.isNativeAvailable() && NexFileManager?.createFile) {
+      try {
+        return await NexFileManager.createFile(parentPath, fileName, content);
+      } catch (err) {
+        console.warn('Native createFile error:', err);
+      }
+    }
+
+    initMockFileSystem();
+    const normalized = parentPath.replace(/\/+$/, '');
+    const newPath = `${normalized}/${fileName}`;
+    const parentList = mockFileSystem.get(normalized) || [];
+
+    const ext = fileName.includes('.') ? fileName.split('.').pop()?.toLowerCase() || '' : '';
+    const newNode: VirtualFileNode = {
+      name: fileName,
+      path: newPath,
+      isDirectory: false,
+      size: content.length,
+      lastModified: Date.now(),
+      mimeType: ext === 'json' ? 'application/json' : 'text/plain',
+      isHidden: fileName.startsWith('.'),
+    };
+
+    parentList.push(newNode);
+    mockFileSystem.set(normalized, parentList);
+    return newPath;
+  }
+
   static async renameItem(path: string, newName: string): Promise<string> {
     if (this.isNativeAvailable()) {
       return await NexFileManager.renameItem(path, newName);
@@ -321,6 +351,17 @@ export class NativeBridgeService {
     return false;
   }
 
+  static async openGoogleLens(filePath: string): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager?.openGoogleLens) {
+      try {
+        return await NexFileManager.openGoogleLens(filePath);
+      } catch (e) {
+        console.warn('Failed to open Google Lens via native bridge', e);
+      }
+    }
+    return false;
+  }
+
   static async getImageDimensions(filePath: string): Promise<{ width: number; height: number; mimeType?: string } | null> {
     if (this.isNativeAvailable() && NexFileManager?.getImageDimensions) {
       try {
@@ -338,6 +379,28 @@ export class NativeBridgeService {
     }
     console.log(`[FileViewer] Simulating opening file: ${filePath} (${mimeType || 'auto'})`);
     return true;
+  }
+
+  static async openWith(filePath: string): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager?.openWith) {
+      try {
+        return await NexFileManager.openWith(filePath);
+      } catch (e) {
+        console.warn('openWith error:', e);
+      }
+    }
+    return await this.openFile(filePath);
+  }
+
+  static async shareFiles(filePaths: string[]): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager?.shareFiles) {
+      try {
+        return await NexFileManager.shareFiles(filePaths);
+      } catch (e) {
+        console.warn('shareFiles error:', e);
+      }
+    }
+    return false;
   }
 
   static async checkAllFilesPermission(): Promise<boolean> {
@@ -378,6 +441,28 @@ export class NativeBridgeService {
       }
     }
     return this.getAllMockFiles(false).filter((f) => f.category === 'images');
+  }
+
+  static async getAllVideos(): Promise<FileItem[]> {
+    if (this.isNativeAvailable() && NexFileManager?.getAllVideos) {
+      try {
+        const nativeVideos: FileItem[] = await NexFileManager.getAllVideos();
+        if (nativeVideos && nativeVideos.length > 0) {
+          return nativeVideos.map((file) => ({
+            ...file,
+            category: 'videos' as FileCategory,
+            parentFolder: file.parentFolder || extractParentFolder(file.path),
+          }));
+        }
+      } catch (err) {
+        console.warn('Failed to load videos from native bridge:', err);
+      }
+    }
+    return this.getAllMockFiles(false).filter(
+      (f) =>
+        f.category === 'videos' ||
+        ['mp4', 'mkv', 'webm', 'mov', 'avi', '3gp'].includes((f.extension || '').toLowerCase())
+    );
   }
 
   static async saveEditedImage(
@@ -459,6 +544,141 @@ export class NativeBridgeService {
       }
     }
     return allFiles;
+  }
+
+  static async setScreenBrightness(brightness: number): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager.setScreenBrightness) {
+      try {
+        return await NexFileManager.setScreenBrightness(brightness);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async getScreenBrightness(): Promise<number> {
+    if (this.isNativeAvailable() && NexFileManager.getScreenBrightness) {
+      try {
+        return await NexFileManager.getScreenBrightness();
+      } catch {
+        return 0.5;
+      }
+    }
+    return 0.5;
+  }
+
+  static async setDeviceVolume(volume: number): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager.setDeviceVolume) {
+      try {
+        return await NexFileManager.setDeviceVolume(volume);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async getDeviceVolume(): Promise<number> {
+    if (this.isNativeAvailable() && NexFileManager.getDeviceVolume) {
+      try {
+        return await NexFileManager.getDeviceVolume();
+      } catch {
+        return 0.5;
+      }
+    }
+    return 0.5;
+  }
+
+  static async captureVideoFrame(filePath: string, timeMs: number): Promise<string> {
+    if (this.isNativeAvailable() && NexFileManager.captureVideoFrame) {
+      return await NexFileManager.captureVideoFrame(filePath, timeMs);
+    }
+    throw new Error('captureVideoFrame not available');
+  }
+
+  static async getVideoThumbnailAt(filePath: string, timeMs: number): Promise<string | null> {
+    if (this.isNativeAvailable() && NexFileManager.getVideoThumbnailAt) {
+      try {
+        return await NexFileManager.getVideoThumbnailAt(filePath, timeMs);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  static async enterPipMode(aspectRatioNum: number = 16, aspectRatioDen: number = 9): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager.enterPipMode) {
+      try {
+        return await NexFileManager.enterPipMode(aspectRatioNum, aspectRatioDen);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async openWithSystemPlayer(filePath: string): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager.openWithSystemPlayer) {
+      return await NexFileManager.openWithSystemPlayer(filePath);
+    }
+    return false;
+  }
+
+  static async setScreenOrientation(orientation: 'landscape' | 'portrait' | 'sensor' | 'unspecified'): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager.setScreenOrientation) {
+      try {
+        return await NexFileManager.setScreenOrientation(orientation);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async savePreference(key: string, value: string): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager.savePreference) {
+      try {
+        return await NexFileManager.savePreference(key, value);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async getPreference(key: string, defaultValue: string = ''): Promise<string> {
+    if (this.isNativeAvailable() && NexFileManager.getPreference) {
+      try {
+        return await NexFileManager.getPreference(key, defaultValue);
+      } catch {
+        return defaultValue;
+      }
+    }
+    return defaultValue;
+  }
+
+  static async isBiometricAvailable(): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager?.isBiometricAvailable) {
+      try {
+        return await NexFileManager.isBiometricAvailable();
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async authenticateBiometric(title: string = 'Private Vault', subtitle: string = 'Touch sensor to unlock'): Promise<boolean> {
+    if (this.isNativeAvailable() && NexFileManager?.authenticateBiometric) {
+      try {
+        return await NexFileManager.authenticateBiometric(title, subtitle);
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 }
 

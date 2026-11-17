@@ -8,6 +8,7 @@ import {
   BreadcrumbItem,
 } from '../../types/file';
 import { fileService } from '../../services/filesystem/fileService';
+import { archiveService } from '../../services/archive/archiveService';
 
 interface FileState {
   currentPath: string;
@@ -38,14 +39,22 @@ interface FileState {
   toggleShowHidden: () => Promise<void>;
   toggleSelectFile: (fileId: string) => void;
   selectAll: () => void;
+  invertSelection: (poolFiles?: FileItem[]) => void;
   clearSelection: () => void;
   setClipboard: (mode: 'copy' | 'move', items: FileItem[]) => void;
   clearClipboard: () => void;
-  pasteClipboard: () => Promise<void>;
-  createFolder: (name: string) => Promise<string>;
+  pasteClipboard: (targetDirPath?: string) => Promise<void>;
+  createFolder: (name: string, parentPath?: string) => Promise<string>;
+  createFile: (name: string, content?: string, parentPath?: string) => Promise<string>;
   renameItem: (path: string, newName: string) => Promise<string>;
   deleteSelected: () => Promise<void>;
+  deleteSelectedWithChoice: (permanent: boolean) => Promise<void>;
   deleteSingle: (path: string) => Promise<void>;
+  deleteSingleWithChoice: (path: string, permanent: boolean) => Promise<void>;
+  compressSelected: (zipName: string, destDirPath?: string) => Promise<string>;
+  extractArchive: (archivePath: string, destDirPath?: string) => Promise<string[]>;
+  hideItem: (path: string) => Promise<string>;
+  unhideItem: (path: string) => Promise<string>;
   toggleFavorite: (path: string) => void;
   setSearchQuery: (query: string) => void;
   getBreadcrumbs: () => BreadcrumbItem[];
@@ -73,6 +82,7 @@ export const useFileStore = create<FileState>((set, get) => ({
   initialize: async () => {
     set({ isLoading: true });
     try {
+      await fileService.initFavorites();
       const volumes = await fileService.getStorageVolumes();
       const recents = await fileService.getRecentFiles(500);
       const initialRoot = volumes[0]?.path || DEFAULT_PATH;
@@ -179,8 +189,21 @@ export const useFileStore = create<FileState>((set, get) => ({
   },
 
   selectAll: () => {
-    const allIds = new Set(get().files.map((f) => f.id));
+    const pool = get().files.length > 0 ? get().files : get().recentFiles;
+    const allIds = new Set(pool.map((f) => f.id));
     set({ selectedFileIds: allIds });
+  },
+
+  invertSelection: (poolFiles?: FileItem[]) => {
+    const targetFiles = poolFiles || (get().files.length > 0 ? get().files : get().recentFiles);
+    const currentSelected = get().selectedFileIds;
+    const inverted = new Set<string>();
+    targetFiles.forEach((f) => {
+      if (!currentSelected.has(f.id)) {
+        inverted.add(f.id);
+      }
+    });
+    set({ selectedFileIds: inverted });
   },
 
   clearSelection: () => {
@@ -195,17 +218,18 @@ export const useFileStore = create<FileState>((set, get) => ({
     set({ clipboard: null });
   },
 
-  pasteClipboard: async () => {
+  pasteClipboard: async (targetDirPath?: string) => {
     const { clipboard, currentPath } = get();
     if (!clipboard || clipboard.items.length === 0) return;
+    const dest = targetDirPath || currentPath;
 
     set({ isLoading: true });
     try {
       for (const item of clipboard.items) {
         if (clipboard.mode === 'copy') {
-          await fileService.copy(item.path, currentPath);
+          await fileService.copy(item.path, dest);
         } else {
-          await fileService.move(item.path, currentPath);
+          await fileService.move(item.path, dest);
         }
       }
       set({ clipboard: null });
@@ -217,10 +241,17 @@ export const useFileStore = create<FileState>((set, get) => ({
     }
   },
 
-  createFolder: async (name: string) => {
-    const { currentPath } = get();
-    const newPath = await fileService.createFolder(currentPath, name);
-    await get().loadDirectory(currentPath);
+  createFolder: async (name: string, parentPath?: string) => {
+    const targetDir = parentPath || get().currentPath;
+    const newPath = await fileService.createFolder(targetDir, name);
+    await get().refresh();
+    return newPath;
+  },
+
+  createFile: async (name: string, content: string = '', parentPath?: string) => {
+    const targetDir = parentPath || get().currentPath;
+    const newPath = await fileService.createFile(targetDir, name, content);
+    await get().refresh();
     return newPath;
   },
 
@@ -231,13 +262,18 @@ export const useFileStore = create<FileState>((set, get) => ({
   },
 
   deleteSelected: async () => {
-    const { selectedFileIds, files } = get();
+    await get().deleteSelectedWithChoice(false);
+  },
+
+  deleteSelectedWithChoice: async (permanent: boolean) => {
+    const { selectedFileIds, files, recentFiles } = get();
+    const allFiles = [...files, ...recentFiles];
     set({ isLoading: true });
     try {
       for (const id of selectedFileIds) {
-        const item = files.find((f) => f.id === id);
+        const item = allFiles.find((f) => f.id === id);
         if (item) {
-          await fileService.delete(item.path, true);
+          await fileService.delete(item.path, !permanent);
         }
       }
       set({ selectedFileIds: new Set() });
@@ -254,12 +290,66 @@ export const useFileStore = create<FileState>((set, get) => ({
     await get().refresh();
   },
 
+  deleteSingleWithChoice: async (path: string, permanent: boolean) => {
+    await fileService.delete(path, !permanent);
+    await get().refresh();
+  },
+
+  compressSelected: async (zipName: string, destDirPath?: string) => {
+    const { selectedFileIds, files, recentFiles, currentPath } = get();
+    const allFiles = [...files, ...recentFiles];
+    const sourcePaths = Array.from(selectedFileIds)
+      .map((id) => allFiles.find((f) => f.id === id)?.path)
+      .filter((p): p is string => Boolean(p));
+
+    if (sourcePaths.length === 0) return '';
+    const cleanZipName = zipName.toLowerCase().endsWith('.zip') ? zipName : `${zipName}.zip`;
+    const targetDir = destDirPath || currentPath;
+    const destZipPath = `${targetDir}/${cleanZipName}`;
+    const result = await archiveService.createArchive(sourcePaths, destZipPath);
+    await get().refresh();
+    set({ selectedFileIds: new Set() });
+    return result;
+  },
+
+  extractArchive: async (archivePath: string, destDirPath?: string) => {
+    const dest = destDirPath || archivePath.substring(0, archivePath.lastIndexOf('/'));
+    const result = await archiveService.extractArchive(archivePath, dest);
+    await get().refresh();
+    return result;
+  },
+
+  hideItem: async (path: string) => {
+    const fileName = path.split('/').pop() || '';
+    if (!fileName.startsWith('.')) {
+      const newName = `.${fileName}`;
+      const newPath = await fileService.rename(path, newName);
+      await get().refresh();
+      return newPath;
+    }
+    return path;
+  },
+
+  unhideItem: async (path: string) => {
+    const fileName = path.split('/').pop() || '';
+    if (fileName.startsWith('.')) {
+      const newName = fileName.replace(/^\.+/, '');
+      const newPath = await fileService.rename(path, newName);
+      await get().refresh();
+      return newPath;
+    }
+    return path;
+  },
+
   toggleFavorite: (path: string) => {
     fileService.toggleFavorite(path);
-    const updated = get().files.map((f) =>
-      f.path === path ? { ...f, isFavorite: !f.isFavorite } : f
-    );
-    set({ files: updated });
+    const updateFav = (f: FileItem) =>
+      f.path === path ? { ...f, isFavorite: !f.isFavorite } : f;
+    set({
+      files: get().files.map(updateFav),
+      recentFiles: get().recentFiles.map(updateFav),
+      categoryFiles: get().categoryFiles.map(updateFav),
+    });
   },
 
   setSearchQuery: (searchQuery: string) => {

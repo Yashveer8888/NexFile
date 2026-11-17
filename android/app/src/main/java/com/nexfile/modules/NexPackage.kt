@@ -19,7 +19,7 @@ class NexPackage : ReactPackage {
         )
     }
 
-    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<View, ReactShadowNode<*>>> {
-        return emptyList()
+    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+        return listOf(NexVideoViewManager())
     }
 }

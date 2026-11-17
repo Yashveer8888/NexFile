@@ -5,6 +5,7 @@ import android.app.WallpaperManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -17,10 +18,12 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Rect
+import android.app.PictureInPictureParams
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.pdf.PdfRenderer
+import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -30,6 +33,7 @@ import android.os.ParcelFileDescriptor
 import android.os.StatFs
 import android.provider.MediaStore
 import android.provider.Settings
+import android.util.Rational
 import android.webkit.MimeTypeMap
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -170,7 +174,9 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                 childName.equals("cache", ignoreCase = true) ||
                 childName.equals(".thumbnails", ignoreCase = true) ||
                 childName.equals(".trash", ignoreCase = true) ||
-                childName.equals(".trash-storage", ignoreCase = true)
+                childName.equals(".trash-storage", ignoreCase = true) ||
+                childName.equals("Databases", ignoreCase = true) ||
+                childName.equals("Backups", ignoreCase = true)
             ) {
                 continue
             }
@@ -189,9 +195,12 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                 }
                 scanDirectory(child, currentDepth + 1, maxDepth, outMap, maxEntries)
             } else if (child.isFile) {
+                val ext = getFileExtension(childName)
+                if (isJunkOrSystemFile(child, childName, ext)) {
+                    continue
+                }
                 val canonical = try { child.canonicalPath } catch (e: Exception) { child.absolutePath }
                 if (!outMap.containsKey(canonical)) {
-                    val ext = getFileExtension(childName)
                     val parentFile = child.parentFile
                     val parentFolder = if (parentFile != null) {
                         if (parentFile.absolutePath == "/storage/emulated/0" || parentFile.name == "0") {
@@ -270,6 +279,11 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                             } else {
                                 file.name
                             }
+                            val ext = getFileExtension(fileName)
+                            if (isJunkOrSystemFile(file, fileName, ext)) {
+                                continue
+                            }
+
                             val size = if (sizeIndex != -1) it.getLong(sizeIndex) else file.length()
                             val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else file.lastModified()
                             val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
@@ -289,7 +303,6 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                                 ""
                             }
 
-                            val ext = getFileExtension(fileName)
                             fileMap[canonical] = FileInfoEntry(
                                 file = file,
                                 name = fileName,
@@ -475,6 +488,206 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    private fun scanVideosInDirectory(
+        dir: File,
+        currentDepth: Int,
+        maxDepth: Int,
+        vidExts: Set<String>,
+        outMap: MutableMap<String, FileInfoEntry>
+    ) {
+        if (currentDepth > maxDepth || !dir.exists() || !dir.isDirectory) return
+        val children = dir.listFiles() ?: return
+
+        for (child in children) {
+            val childName = child.name
+            if (childName.startsWith(".") ||
+                childName.equals("cache", ignoreCase = true) ||
+                childName.equals(".trash", ignoreCase = true) ||
+                childName.equals(".thumbnails", ignoreCase = true)
+            ) {
+                continue
+            }
+
+            if (child.isDirectory) {
+                if (childName.equals("data", ignoreCase = true) || childName.equals("obb", ignoreCase = true)) {
+                    continue
+                }
+                scanVideosInDirectory(child, currentDepth + 1, maxDepth, vidExts, outMap)
+            } else if (child.isFile) {
+                val ext = getFileExtension(childName).lowercase()
+                if (vidExts.contains(ext)) {
+                    val canonical = try { child.canonicalPath } catch (e: Exception) { child.absolutePath }
+                    if (!outMap.containsKey(canonical)) {
+                        val parentFile = child.parentFile
+                        var parentFolder = parentFile?.name ?: "Videos"
+                        if (parentFolder.equals("0", ignoreCase = true) ||
+                            parentFolder.equals("emulated", ignoreCase = true) ||
+                            child.parentFile?.absolutePath == "/storage/emulated/0"
+                        ) {
+                            parentFolder = "Internal Storage"
+                        } else if (parentFolder.equals("Sent", ignoreCase = true) || parentFolder.equals("Private", ignoreCase = true)) {
+                            val grandParent = parentFile?.parentFile?.name
+                            if (!grandParent.isNullOrEmpty() && grandParent.contains("WhatsApp", ignoreCase = true)) {
+                                parentFolder = grandParent
+                            }
+                        } else if (parentFolder.endsWith(".mkv", ignoreCase = true) || parentFolder.endsWith(".mp4", ignoreCase = true)) {
+                            val grandParent = parentFile?.parentFile?.name
+                            parentFolder = if (!grandParent.isNullOrEmpty() && grandParent != "0") grandParent else parentFolder.substringBeforeLast(".")
+                        }
+
+                        outMap[canonical] = FileInfoEntry(
+                            file = child,
+                            name = childName,
+                            size = child.length(),
+                            lastModified = child.lastModified(),
+                            mimeType = getMimeType(child),
+                            parentFolder = parentFolder,
+                            extension = ext
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @ReactMethod
+    fun getAllVideos(promise: Promise) {
+        try {
+            val videoMap = LinkedHashMap<String, FileInfoEntry>()
+            val vidExts = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "flv", "ts", "m4v", "wmv", "mpg", "mpeg")
+
+            // 1. Direct targeted deep scan of major video storage locations:
+            val storageRoot = Environment.getExternalStorageDirectory()
+            if (storageRoot != null && storageRoot.exists()) {
+                // DCIM (Snapchat, Camera, Screenrecorder, etc.)
+                val dcim = File(storageRoot, "DCIM")
+                if (dcim.exists()) scanVideosInDirectory(dcim, 0, 5, vidExts, videoMap)
+
+                // Download (including movie subfolders like Ramayana...mkv)
+                val download = File(storageRoot, "Download")
+                if (download.exists()) scanVideosInDirectory(download, 0, 5, vidExts, videoMap)
+
+                // Movies
+                val movies = File(storageRoot, "Movies")
+                if (movies.exists()) scanVideosInDirectory(movies, 0, 5, vidExts, videoMap)
+
+                // Pictures
+                val pictures = File(storageRoot, "Pictures")
+                if (pictures.exists()) scanVideosInDirectory(pictures, 0, 5, vidExts, videoMap)
+
+                // WhatsApp Media
+                val waMedia = File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video")
+                if (waMedia.exists()) scanVideosInDirectory(waMedia, 0, 5, vidExts, videoMap)
+
+                // Telegram Media
+                val tgMedia = File(storageRoot, "Android/media/org.telegram.messenger")
+                if (tgMedia.exists()) scanVideosInDirectory(tgMedia, 0, 6, vidExts, videoMap)
+
+                // Android/media in general
+                val androidMedia = File(storageRoot, "Android/media")
+                if (androidMedia.exists()) scanVideosInDirectory(androidMedia, 0, 7, vidExts, videoMap)
+
+                // Whole internal storage
+                scanVideosInDirectory(storageRoot, 0, 4, vidExts, videoMap)
+            }
+
+            // 2. Query MediaStore Videos to supplement any indexed items
+            try {
+                val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                val projection = arrayOf(
+                    MediaStore.Video.Media.DATA,
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.SIZE,
+                    MediaStore.Video.Media.DATE_MODIFIED,
+                    MediaStore.Video.Media.MIME_TYPE,
+                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+                )
+                val sortOrder = "${MediaStore.Video.Media.DATE_MODIFIED} DESC"
+                val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
+
+                cursor?.use {
+                    val dataIndex = it.getColumnIndex(MediaStore.Video.Media.DATA)
+                    val nameIndex = it.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                    val sizeIndex = it.getColumnIndex(MediaStore.Video.Media.SIZE)
+                    val dateIndex = it.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+                    val mimeIndex = it.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
+                    val bucketIndex = it.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+
+                    while (it.moveToNext()) {
+                        val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
+                        if (filePath.isNullOrEmpty()) continue
+
+                        val file = File(filePath)
+                        if (file.name.startsWith(".")) continue
+
+                        val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
+                        if (!videoMap.containsKey(canonical)) {
+                            val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
+                                it.getString(nameIndex)
+                            } else {
+                                file.name
+                            }
+                            val size = if (sizeIndex != -1) it.getLong(sizeIndex) else if (file.exists()) file.length() else 0L
+                            val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else if (file.exists()) file.lastModified() else System.currentTimeMillis()
+                            val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
+                                it.getString(mimeIndex)
+                            } else {
+                                getMimeType(file)
+                            }
+
+                            var bucketName = if (bucketIndex != -1 && !it.getString(bucketIndex).isNullOrEmpty()) {
+                                it.getString(bucketIndex)
+                            } else {
+                                file.parentFile?.name ?: "Videos"
+                            }
+                            if (bucketName.endsWith(".mkv", ignoreCase = true) || bucketName.endsWith(".mp4", ignoreCase = true)) {
+                                val gp = file.parentFile?.parentFile?.name
+                                bucketName = if (!gp.isNullOrEmpty() && gp != "0") gp else bucketName.substringBeforeLast(".")
+                            }
+
+                            val ext = getFileExtension(fileName)
+                            videoMap[canonical] = FileInfoEntry(
+                                file = file,
+                                name = fileName,
+                                size = size,
+                                lastModified = lastModified,
+                                mimeType = mimeType,
+                                parentFolder = bucketName,
+                                extension = ext
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+            }
+
+            // 3. Sort descending
+            val sortedList = videoMap.values.sortedByDescending { it.lastModified }
+            val array = Arguments.createArray()
+
+            for (item in sortedList) {
+                val map = Arguments.createMap().apply {
+                    putString("id", item.file.absolutePath)
+                    putString("name", item.name)
+                    putString("path", item.file.absolutePath)
+                    putBoolean("isDirectory", false)
+                    putDouble("size", item.size.toDouble())
+                    putDouble("lastModified", item.lastModified.toDouble())
+                    putString("extension", item.extension)
+                    putString("mimeType", item.mimeType)
+                    putBoolean("isHidden", false)
+                    putString("parentFolder", item.parentFolder)
+                    putString("thumbnailUri", "file://${item.file.absolutePath}")
+                }
+                array.pushMap(map)
+            }
+
+            promise.resolve(array)
+        } catch (e: Exception) {
+            promise.reject("GET_VIDEOS_ERROR", e.message, e)
+        }
+    }
+
     @ReactMethod
     fun getThumbnail(filePath: String, promise: Promise) {
         try {
@@ -654,6 +867,31 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
             }
         } catch (e: Exception) {
             promise.reject("CREATE_DIR_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun createFile(parentPath: String, fileName: String, content: String, promise: Promise) {
+        try {
+            val file = File(parentPath, fileName)
+            if (file.exists()) {
+                promise.reject("ALREADY_EXISTS", "File already exists")
+                return
+            }
+            val parent = file.parentFile
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs()
+            }
+            file.writeText(content)
+            MediaScannerConnection.scanFile(
+                reactContext,
+                arrayOf(file.absolutePath),
+                null,
+                null
+            )
+            promise.resolve(file.absolutePath)
+        } catch (e: Exception) {
+            promise.reject("CREATE_FILE_ERROR", e.message, e)
         }
     }
 
@@ -843,6 +1081,76 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun openWith(filePath: String, promise: Promise) {
+        try {
+            val file = File(filePath)
+            if (!file.exists()) {
+                promise.reject("NOT_FOUND", "File does not exist")
+                return
+            }
+            val uri: Uri = FileProvider.getUriForFile(
+                reactContext,
+                "${reactContext.packageName}.fileprovider",
+                file
+            )
+            val type = getMimeType(file)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, type)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(intent, "Open with...").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            reactContext.startActivity(chooser)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("OPEN_WITH_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun shareFiles(filePaths: ReadableArray, promise: Promise) {
+        try {
+            val uris = ArrayList<Uri>()
+            for (i in 0 until filePaths.size()) {
+                val path = filePaths.getString(i) ?: continue
+                val file = File(path)
+                if (file.exists()) {
+                    val uri = FileProvider.getUriForFile(
+                        reactContext,
+                        "${reactContext.packageName}.fileprovider",
+                        file
+                    )
+                    uris.add(uri)
+                }
+            }
+            if (uris.isEmpty()) {
+                promise.reject("NO_FILES", "No valid files to share")
+                return
+            }
+            val intent = if (uris.size == 1) {
+                Intent(Intent.ACTION_SEND).apply {
+                    type = getMimeType(File(filePaths.getString(0) ?: ""))
+                    putExtra(Intent.EXTRA_STREAM, uris[0])
+                }
+            } else {
+                Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = "*/*"
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                }
+            }
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val chooser = Intent.createChooser(intent, "Share via").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            reactContext.startActivity(chooser)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("SHARE_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
     fun setAsWallpaper(filePath: String, promise: Promise) {
         try {
             val file = File(filePath)
@@ -860,6 +1168,57 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("ERR_WALLPAPER", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun openGoogleLens(filePath: String, promise: Promise) {
+        try {
+            val file = File(filePath)
+            if (!file.exists()) {
+                promise.reject("ERR_NOT_FOUND", "File does not exist")
+                return
+            }
+
+            val uri: Uri = FileProvider.getUriForFile(
+                reactContext,
+                "${reactContext.packageName}.fileprovider",
+                file
+            )
+
+            // Try standard Google Lens package
+            val lensIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/*"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                setPackage("com.google.ar.lens")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val pm = reactContext.packageManager
+            if (lensIntent.resolveActivity(pm) != null) {
+                reactContext.startActivity(lensIntent)
+                promise.resolve(true)
+                return
+            }
+
+            // Fallback: Google Search app
+            val gsaIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "image/*")
+                setPackage("com.google.android.googlequicksearchbox")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (gsaIntent.resolveActivity(pm) != null) {
+                reactContext.startActivity(gsaIntent)
+                promise.resolve(true)
+                return
+            }
+
+            // Neither Google Lens nor Google app found -> resolve false
+            promise.resolve(false)
+        } catch (e: Exception) {
+            promise.reject("ERR_LENS", e.message, e)
         }
     }
 
@@ -1015,6 +1374,53 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                         ))
                         cm.postConcat(sepiaMatrix)
                     }
+                    "vivid" -> {
+                        val vividMatrix = ColorMatrix()
+                        vividMatrix.setSaturation(1.5f)
+                        cm.postConcat(vividMatrix)
+                    }
+                    "dramatic" -> {
+                        val dramaticMatrix = ColorMatrix(floatArrayOf(
+                            1.3f, 0f, 0f, 0f, -25f,
+                            0f, 1.3f, 0f, 0f, -25f,
+                            0f, 0f, 1.3f, 0f, -25f,
+                            0f, 0f, 0f, 1f, 0f
+                        ))
+                        cm.postConcat(dramaticMatrix)
+                    }
+                    "cool" -> {
+                        val coolMatrix = ColorMatrix(floatArrayOf(
+                            0.9f, 0f, 0f, 0f, -10f,
+                            0f, 1.0f, 0f, 0f, 0f,
+                            0f, 0f, 1.25f, 0f, 30f,
+                            0f, 0f, 0f, 1f, 0f
+                        ))
+                        cm.postConcat(coolMatrix)
+                    }
+                    "noir" -> {
+                        val noirSat = ColorMatrix()
+                        noirSat.setSaturation(0f)
+                        val noirContrast = ColorMatrix(floatArrayOf(
+                            1.45f, 0f, 0f, 0f, -35f,
+                            0f, 1.45f, 0f, 0f, -35f,
+                            0f, 0f, 1.45f, 0f, -35f,
+                            0f, 0f, 0f, 1f, 0f
+                        ))
+                        noirSat.postConcat(noirContrast)
+                        cm.postConcat(noirSat)
+                    }
+                    "silvertone" -> {
+                        val silverSat = ColorMatrix()
+                        silverSat.setSaturation(0.08f)
+                        val silverMatrix = ColorMatrix(floatArrayOf(
+                            1.1f, 0f, 0f, 0f, 15f,
+                            0f, 1.15f, 0f, 0f, 20f,
+                            0f, 0f, 1.25f, 0f, 30f,
+                            0f, 0f, 0f, 1f, 0f
+                        ))
+                        silverSat.postConcat(silverMatrix)
+                        cm.postConcat(silverSat)
+                    }
                 }
 
                 paint.colorFilter = ColorMatrixColorFilter(cm)
@@ -1120,6 +1526,381 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
             promise.resolve(map)
         } catch (e: Exception) {
             promise.reject("ERR_DIMENSIONS", e.message, e)
+        }
+    }
+
+    private val ALLOWED_RECENT_EXTENSIONS = setOf(
+        // Images
+        "jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "avif", "svg", "raw", "cr2", "nef", "dng", "arw",
+        // Videos
+        "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "3gp", "m4v", "ts",
+        // Audio
+        "mp3", "wav", "aac", "flac", "ogg", "m4a", "wma", "opus", "mid", "amr",
+        // Documents (PDF, Word, Excel, PPT, Text, HTML, XML, CSV, etc.)
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "html", "htm", "json", "xml", "md", "epub",
+        // Archives & Packages
+        "apk", "xapk", "apks", "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "tgz"
+    )
+
+    private fun isJunkOrSystemFile(file: File, name: String, ext: String): Boolean {
+        val lowerName = name.lowercase(Locale.ROOT)
+        val lowerExt = ext.lowercase(Locale.ROOT)
+        val path = file.absolutePath.lowercase(Locale.ROOT)
+
+        // Hidden files
+        if (lowerName.startsWith(".")) return true
+
+        // WhatsApp crypt files (crypt, crypt12, crypt14, crypt15, etc.)
+        if (lowerExt.startsWith("crypt") || lowerName.contains(".crypt")) return true
+
+        // Databases, backups, thumbnails directories (excluding user media)
+        if (path.contains("/databases/") || path.contains("/databases") ||
+            path.contains("/backups/") || path.contains("/backups") ||
+            path.contains("/.thumbnails")
+        ) {
+            if (!path.contains("/whatsapp/media") && !path.contains("/whatsapp business/media")) {
+                return true
+            }
+        }
+
+        // Database and log extensions
+        if (lowerExt == "db" || lowerExt == "db-wal" || lowerExt == "db-shm" ||
+            lowerExt == "sqlite" || lowerExt == "sqlite3" || lowerExt == "realm" ||
+            lowerExt == "log" || lowerExt == "trace"
+        ) {
+            return true
+        }
+
+        // Temporary and system junk files
+        if (lowerExt == "tmp" || lowerExt == "temp" || lowerExt == "cache" ||
+            lowerExt == "dat" || lowerExt == "bin" || lowerExt == "nomedia" ||
+            lowerExt == "bak" || lowerExt == "backup" || lowerExt == "dump" ||
+            lowerExt == "dmp" || lowerExt == "stackdump" || lowerExt == "idx" ||
+            lowerExt == "part" || lowerExt == "crdownload" || lowerExt == "dex" ||
+            lowerExt == "class"
+        ) {
+            return true
+        }
+
+        // msgstore database backups
+        if (lowerName.startsWith("msgstore") || lowerName.startsWith("chatsettingsbackup") || lowerName.startsWith("wa.db")) {
+            return true
+        }
+
+        // Must be in allowed extensions list
+        if (!ALLOWED_RECENT_EXTENSIONS.contains(lowerExt)) {
+            return true
+        }
+
+        return false
+    }
+
+    @ReactMethod
+    fun setScreenBrightness(brightness: Double, promise: Promise) {
+        try {
+            reactContext.currentActivity?.runOnUiThread {
+                val window = reactContext.currentActivity?.window
+                if (window != null) {
+                    val lp = window.attributes
+                    lp.screenBrightness = brightness.toFloat().coerceIn(0.01f, 1.0f)
+                    window.attributes = lp
+                    promise.resolve(true)
+                } else {
+                    promise.resolve(false)
+                }
+            } ?: promise.resolve(false)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getScreenBrightness(promise: Promise) {
+        try {
+            val window = reactContext.currentActivity?.window
+            val br = window?.attributes?.screenBrightness ?: -1f
+            if (br < 0) {
+                val sysBr = Settings.System.getInt(reactContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128)
+                promise.resolve(sysBr / 255.0)
+            } else {
+                promise.resolve(br.toDouble())
+            }
+        } catch (e: Exception) {
+            promise.resolve(0.5)
+        }
+    }
+
+    @ReactMethod
+    fun setDeviceVolume(volumePercent: Double, promise: Promise) {
+        try {
+            val audioManager = reactContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val target = (volumePercent * maxVol).toInt().coerceIn(0, maxVol)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getDeviceVolume(promise: Promise) {
+        try {
+            val audioManager = reactContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            promise.resolve(curVol.toDouble() / maxVol.toDouble())
+        } catch (e: Exception) {
+            promise.resolve(0.5)
+        }
+    }
+
+    @ReactMethod
+    fun captureVideoFrame(filePath: String, timeMs: Double, promise: Promise) {
+        try {
+            val cleanPath = if (filePath.startsWith("file://")) filePath.substring(7) else filePath
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(cleanPath)
+            val frame = retriever.getFrameAtTime((timeMs * 1000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            if (frame != null) {
+                val destDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "NexFile")
+                if (!destDir.exists()) destDir.mkdirs()
+                val destFile = File(destDir, "VID_CAPTURE_${System.currentTimeMillis()}.jpg")
+                val out = FileOutputStream(destFile)
+                frame.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                out.flush()
+                out.close()
+                MediaScannerConnection.scanFile(reactContext, arrayOf(destFile.absolutePath), arrayOf("image/jpeg"), null)
+                promise.resolve(destFile.absolutePath)
+            } else {
+                promise.reject("CAPTURE_FAILED", "Could not extract video frame")
+            }
+        } catch (e: Exception) {
+            promise.reject("CAPTURE_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getVideoThumbnailAt(filePath: String, timeMs: Double, promise: Promise) {
+        try {
+            val cleanPath = if (filePath.startsWith("file://")) filePath.substring(7) else filePath
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(cleanPath)
+            val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime((timeMs * 1000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 240, 135)
+            } else {
+                val raw = retriever.getFrameAtTime((timeMs * 1000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                if (raw != null) Bitmap.createScaledBitmap(raw, 240, 135, true) else null
+            }
+            if (frame != null) {
+                val cacheDir = File(reactContext.cacheDir, "seek_thumbs")
+                if (!cacheDir.exists()) cacheDir.mkdirs()
+                val destFile = File(cacheDir, "seek_thumb.jpg")
+                val out = FileOutputStream(destFile)
+                frame.compress(Bitmap.CompressFormat.JPEG, 70, out)
+                out.flush()
+                out.close()
+                promise.resolve("file://${destFile.absolutePath}")
+            } else {
+                promise.resolve(null)
+            }
+        } catch (e: Exception) {
+            promise.resolve(null)
+        }
+    }
+
+    @ReactMethod
+    fun enterPipMode(aspectRatioNum: Int, aspectRatioDen: Int, promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                reactContext.currentActivity?.runOnUiThread {
+                    try {
+                        val num = if (aspectRatioNum <= 0) 16 else aspectRatioNum
+                        val den = if (aspectRatioDen <= 0) 9 else aspectRatioDen
+                        val rational = Rational(num, den)
+                        val params = PictureInPictureParams.Builder()
+                            .setAspectRatio(rational)
+                            .build()
+                        val success = reactContext.currentActivity?.enterPictureInPictureMode(params) ?: false
+                        promise.resolve(success)
+                    } catch (e: Exception) {
+                        promise.resolve(false)
+                    }
+                } ?: promise.resolve(false)
+            } else {
+                promise.resolve(false)
+            }
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun openWithSystemPlayer(filePath: String, promise: Promise) {
+        try {
+            val cleanPath = if (filePath.startsWith("file://")) filePath.substring(7) else filePath
+            val file = File(cleanPath)
+            val uri = FileProvider.getUriForFile(
+                reactContext,
+                "${reactContext.packageName}.provider",
+                file
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "video/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            reactContext.startActivity(Intent.createChooser(intent, "Play Video with...").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("PLAY_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun setScreenOrientation(orientation: String, promise: Promise) {
+        try {
+            reactContext.currentActivity?.runOnUiThread {
+                val act = reactContext.currentActivity
+                if (act != null) {
+                    when (orientation.lowercase(Locale.ROOT)) {
+                        "landscape" -> act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                        "portrait" -> act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        "sensor" -> act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                        else -> act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    }
+                    promise.resolve(true)
+                } else {
+                    promise.resolve(false)
+                }
+            } ?: promise.resolve(false)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun savePreference(key: String, value: String, promise: Promise) {
+        try {
+            val prefs = reactContext.getSharedPreferences("nexfile_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString(key, value).apply()
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getPreference(key: String, defaultValue: String, promise: Promise) {
+        try {
+            val prefs = reactContext.getSharedPreferences("nexfile_prefs", Context.MODE_PRIVATE)
+            val v = prefs.getString(key, defaultValue) ?: defaultValue
+            promise.resolve(v)
+        } catch (e: Exception) {
+            promise.resolve(defaultValue)
+        }
+    }
+
+    @ReactMethod
+    fun setImmersiveMode(enable: Boolean, promise: Promise) {
+        try {
+            reactContext.currentActivity?.runOnUiThread {
+                val act = reactContext.currentActivity
+                if (act != null) {
+                    val decorView = act.window.decorView
+                    if (enable) {
+                        decorView.systemUiVisibility = (
+                            android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                            or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        )
+                    } else {
+                        decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+                    }
+                    promise.resolve(true)
+                } else {
+                    promise.resolve(false)
+                }
+            } ?: promise.resolve(false)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun isBiometricAvailable(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val biometricManager = reactContext.getSystemService(Context.BIOMETRIC_SERVICE) as? android.hardware.biometrics.BiometricManager
+                if (biometricManager != null) {
+                    val res = biometricManager.canAuthenticate(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_WEAK)
+                    promise.resolve(res == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS)
+                    return
+                }
+            }
+            promise.resolve(Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun authenticateBiometric(title: String, subtitle: String, promise: Promise) {
+        try {
+            val activity = reactContext.currentActivity
+            if (activity == null) {
+                promise.resolve(false)
+                return
+            }
+            activity.runOnUiThread {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        val cancellationSignal = android.os.CancellationSignal()
+                        val executor = ContextCompat.getMainExecutor(activity)
+                        val prompt = android.hardware.biometrics.BiometricPrompt.Builder(activity)
+                            .setTitle(if (title.isNotEmpty()) title else "Private Vault")
+                            .setSubtitle(if (subtitle.isNotEmpty()) subtitle else "Authenticate using your fingerprint")
+                            .setNegativeButton("Cancel", executor) { _, _ ->
+                                try { promise.resolve(false) } catch (_: Exception) {}
+                            }
+                            .build()
+
+                        var resolved = false
+                        prompt.authenticate(cancellationSignal, executor, object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+                            override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult?) {
+                                super.onAuthenticationSucceeded(result)
+                                if (!resolved) {
+                                    resolved = true
+                                    try { promise.resolve(true) } catch (_: Exception) {}
+                                }
+                            }
+
+                            override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                                super.onAuthenticationError(errorCode, errString)
+                                if (!resolved) {
+                                    resolved = true
+                                    try { promise.resolve(false) } catch (_: Exception) {}
+                                }
+                            }
+
+                            override fun onAuthenticationFailed() {
+                                super.onAuthenticationFailed()
+                            }
+                        })
+                    } else {
+                        promise.resolve(false)
+                    }
+                } catch (e: Exception) {
+                    try { promise.resolve(false) } catch (_: Exception) {}
+                }
+            }
+        } catch (e: Exception) {
+            promise.resolve(false)
         }
     }
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,35 @@ import {
   FlatList,
   RefreshControl,
   TouchableOpacity,
-  AppState,
   BackHandler,
+  AppState,
+  Animated,
+  PanResponder,
+  ScrollView,
+  Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { HardDrive, Sparkles, SlidersHorizontal, ArrowUpRight, ShieldAlert } from 'lucide-react-native';
+import {
+  HardDrive,
+  ShieldAlert,
+  ArrowUpRight,
+  Lock,
+  Plus,
+  ClipboardPaste,
+  X,
+  Star,
+  Folder,
+  FileCode,
+} from 'lucide-react-native';
 import { useThemeStore } from '../../app/store/useThemeStore';
 import { useFileStore } from '../../app/store/useFileStore';
+import { useVaultStore } from '../../app/store/useVaultStore';
 import { typography } from '../../theme/typography';
-import { spacing, borderRadius } from '../../theme/spacing';
+import { spacing, borderRadius, elevation } from '../../theme/spacing';
+import { formatBytes } from '../../utils/formatters';
+import { isImageFile, isVideoFile, isAudioFile, isUsefulRecentFile } from '../../utils/fileTypes';
+import { FileItem as FileItemType } from '../../types/file';
 import { Header } from '../../components/common/Header';
 import { Card } from '../../components/common/Card';
 import { ProgressBar } from '../../components/common/ProgressBar';
@@ -23,16 +42,17 @@ import { CategoryChips } from '../../components/file/CategoryChips';
 import { FileItem } from '../../components/file/FileItem';
 import { FileGridItem } from '../../components/file/FileGridItem';
 import { FileActionSheet } from '../../components/file/FileActionSheet';
+import { EmptyState } from '../../components/common/EmptyState';
 import { SortFilterModal } from '../../components/file/SortFilterModal';
 import { FileDetailsModal } from '../../components/dialogs/FileDetailsModal';
 import { RenameDialog } from '../../components/dialogs/RenameDialog';
-import { ConfirmDialog } from '../../components/dialogs/ConfirmDialog';
+import { CreateItemDialog } from '../../components/dialogs/CreateItemDialog';
+import { DeleteChoiceModal } from '../../components/dialogs/DeleteChoiceModal';
+import { CompressDialog } from '../../components/dialogs/CompressDialog';
+import { ItemActionModal } from '../../components/dialogs/ItemActionModal';
 import { ChecksumModal } from '../../components/dialogs/ChecksumModal';
-import { EmptyState } from '../../components/common/EmptyState';
-import { formatBytes } from '../../utils/formatters';
-import { FileItem as FileItemType, FileCategory } from '../../types/file';
+import { SetVaultPinModal } from '../../components/dialogs/SetVaultPinModal';
 import { fileService } from '../../services/filesystem/fileService';
-import { isImageFile } from '../../utils/fileTypes';
 import {
   checkAllFilesPermission,
   requestAllFilesPermission,
@@ -60,20 +80,80 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
     selectedFileIds,
     toggleSelectFile,
     selectAll,
+    invertSelection,
     clearSelection,
-    deleteSelected,
-    deleteSingle,
+    deleteSelectedWithChoice,
+    deleteSingleWithChoice,
     renameItem,
+    createFolder,
+    createFile,
+    compressSelected,
+    extractArchive,
+    hideItem,
+    unhideItem,
+    toggleFavorite,
+    clipboard,
     setClipboard,
+    clearClipboard,
+    pasteClipboard,
   } = useFileStore();
 
   const [filterModalVisible, setFilterModalVisible] = useState(false);
+  const [createItemVisible, setCreateItemVisible] = useState(false);
+  const [actionModalItem, setActionModalItem] = useState<FileItemType | null>(null);
   const [detailsItem, setDetailsItem] = useState<FileItemType | null>(null);
   const [renameItemTarget, setRenameItemTarget] = useState<FileItemType | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileItemType | null>(null);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  const [compressTargetItem, setCompressTargetItem] = useState<FileItemType | null>(null);
+  const [batchCompressVisible, setBatchCompressVisible] = useState(false);
   const [checksumItem, setChecksumItem] = useState<FileItemType | null>(null);
   const [hasAllFilesAccess, setHasAllFilesAccess] = useState<boolean>(true);
+  const [setPinModalVisible, setSetPinModalVisible] = useState(false);
+  const [pendingVaultItem, setPendingVaultItem] = useState<FileItemType | null>(null);
+  const [pendingBatchVault, setPendingBatchVault] = useState(false);
+
+  // Two-Finger Top-to-Bottom Slide to Open Private Folder / Vault
+  const isNavigatingToVaultRef = useRef(false);
+  const pullDistanceAnim = useRef(new Animated.Value(0)).current;
+
+  const twoFingerSlideResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponderCapture: (evt) => {
+          return evt.nativeEvent.touches && evt.nativeEvent.touches.length === 2;
+        },
+        onMoveShouldSetPanResponderCapture: (evt, gesture) => {
+          const numTouches = evt.nativeEvent.touches?.length || gesture.numberActiveTouches;
+          return numTouches === 2 && gesture.dy > 10;
+        },
+        onPanResponderGrant: () => {
+          pullDistanceAnim.setValue(0);
+        },
+        onPanResponderMove: (_evt, gesture) => {
+          if (gesture.dy > 0) {
+            pullDistanceAnim.setValue(Math.min(90, gesture.dy));
+          }
+          if (gesture.dy > 65 && !isNavigatingToVaultRef.current) {
+            isNavigatingToVaultRef.current = true;
+            navigation.navigate('PrivateVaultScreen');
+            setTimeout(() => {
+              isNavigatingToVaultRef.current = false;
+              Animated.spring(pullDistanceAnim, { toValue: 0, useNativeDriver: true }).start();
+            }, 800);
+          }
+        },
+        onPanResponderRelease: () => {
+          Animated.spring(pullDistanceAnim, { toValue: 0, useNativeDriver: true }).start();
+          isNavigatingToVaultRef.current = false;
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(pullDistanceAnim, { toValue: 0, useNativeDriver: true }).start();
+          isNavigatingToVaultRef.current = false;
+        },
+      }),
+    [navigation, pullDistanceAnim]
+  );
 
   useEffect(() => {
     initialize();
@@ -101,17 +181,28 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
   };
 
   const displayedFiles = (activeCategory === 'all' ? recentFiles : categoryFiles)
+    .filter((file) => isUsefulRecentFile(file))
     .slice()
     .sort((a, b) => b.lastModified - a.lastModified);
   const isSelectionMode = selectedFileIds.size > 0;
 
-  // Handle hardware back on Recent screen one by one:
-  // 1. Modals -> 2. Selection mode -> 3. Category filter reset -> 4. Default back
+  // Filter pinned favorites
+  const favoriteFiles = displayedFiles.filter((f) => f.isFavorite);
+
+  // Handle hardware back on Recent screen one by one
   useFocusEffect(
     useCallback(() => {
       const onHardwareBack = () => {
         if (filterModalVisible) {
           setFilterModalVisible(false);
+          return true;
+        }
+        if (createItemVisible) {
+          setCreateItemVisible(false);
+          return true;
+        }
+        if (actionModalItem) {
+          setActionModalItem(null);
           return true;
         }
         if (detailsItem) {
@@ -128,6 +219,14 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         }
         if (confirmBatchDelete) {
           setConfirmBatchDelete(false);
+          return true;
+        }
+        if (compressTargetItem) {
+          setCompressTargetItem(null);
+          return true;
+        }
+        if (batchCompressVisible) {
+          setBatchCompressVisible(false);
           return true;
         }
         if (checksumItem) {
@@ -149,10 +248,14 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       return () => subscription.remove();
     }, [
       filterModalVisible,
+      createItemVisible,
+      actionModalItem,
       detailsItem,
       renameItemTarget,
       deleteTarget,
       confirmBatchDelete,
+      compressTargetItem,
+      batchCompressVisible,
       checksumItem,
       isSelectionMode,
       activeCategory,
@@ -168,9 +271,10 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
     freeBytes: 85.6 * 1024 * 1024 * 1024,
   };
 
-  const storageUsagePercent = primaryVolume.totalBytes > 0
-    ? primaryVolume.usedBytes / primaryVolume.totalBytes
-    : 0.35;
+  const storageUsagePercent =
+    primaryVolume.totalBytes > 0
+      ? primaryVolume.usedBytes / primaryVolume.totalBytes
+      : 0.35;
 
   const handleFilePress = (item: FileItemType) => {
     if (isSelectionMode) {
@@ -184,6 +288,12 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         images: imageList.length > 0 ? imageList : [item],
         initialIndex: Math.max(0, idx),
       });
+    } else if (isVideoFile(item) || isAudioFile(item)) {
+      const mediaList = displayedFiles.filter((f) => isVideoFile(f) || isAudioFile(f));
+      navigation.navigate('MediaPlayerScreen', {
+        file: item,
+        playlist: mediaList.length > 0 ? mediaList : [item],
+      });
     } else {
       fileService.openFile(item.path, item.mimeType);
     }
@@ -194,11 +304,111 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
   };
 
   const handleMorePress = (item: FileItemType) => {
-    setDetailsItem(item);
+    setActionModalItem(item);
+  };
+
+  // Lock single file into private vault
+  const handleLockInVault = async (item: FileItemType) => {
+    const { isPinSet, importFileToVault } = useVaultStore.getState();
+    if (!isPinSet) {
+      setPendingVaultItem(item);
+      setPendingBatchVault(false);
+      setSetPinModalVisible(true);
+      return;
+    }
+    try {
+      await importFileToVault(item.path, '0000');
+      Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
+      refresh();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to lock file in vault');
+    }
+  };
+
+  // Lock batch files into private vault
+  const handleBatchLockInVault = async () => {
+    const { isPinSet, importFilesToVault } = useVaultStore.getState();
+    const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
+    if (selected.length === 0) {
+      Alert.alert('Vault Notice', 'Only files (not folders) can be locked in the Private Vault.');
+      return;
+    }
+    if (!isPinSet) {
+      setPendingBatchVault(true);
+      setSetPinModalVisible(true);
+      return;
+    }
+    try {
+      await importFilesToVault(selected.map((item) => item.path), '0000');
+      clearSelection();
+      Alert.alert('Vault Secured', `${selected.length} item(s) locked in your Private Vault.`);
+      refresh();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to lock items in vault');
+    }
+  };
+
+  const handlePinCreated = async (pin: string) => {
+    useVaultStore.getState().setPin(pin, true);
+    setSetPinModalVisible(false);
+    if (pendingBatchVault) {
+      setPendingBatchVault(false);
+      const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
+      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
+      clearSelection();
+      Alert.alert('Passcode Set & Secured', `${selected.length} item(s) locked in Private Folder.`);
+      refresh();
+    } else if (pendingVaultItem) {
+      const it = pendingVaultItem;
+      setPendingVaultItem(null);
+      await useVaultStore.getState().importFileToVault(it.path, pin);
+      Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
+      refresh();
+    }
+  };
+
+  // Share batch files
+  const handleBatchShare = () => {
+    const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
+    if (selected.length > 0) {
+      fileService.shareFiles(selected.map((s) => s.path));
+    }
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+    <View
+      style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}
+      {...twoFingerSlideResponder.panHandlers}
+    >
+      {/* Two-finger Pull Down Indicator Banner */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.twoFingerPullBanner,
+          {
+            opacity: pullDistanceAnim.interpolate({
+              inputRange: [0, 20, 65],
+              outputRange: [0, 0.7, 1],
+              extrapolate: 'clamp',
+            }),
+            transform: [
+              {
+                translateY: pullDistanceAnim.interpolate({
+                  inputRange: [0, 65],
+                  outputRange: [-45, 10],
+                  extrapolate: 'clamp',
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        <View style={styles.twoFingerPullPill}>
+          <Lock size={16} color="#69F0AE" style={{ marginRight: 6 }} />
+          <Text style={styles.twoFingerPullText}>Opening Private Folder...</Text>
+        </View>
+      </Animated.View>
+
       <Header
         title="NexFile"
         subtitle="Smart File Manager"
@@ -207,7 +417,49 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         showThemeToggle
         showFilter
         onFilterPress={() => setFilterModalVisible(true)}
+        rightActions={
+          <TouchableOpacity
+            style={styles.headerActionBtn}
+            onPress={() => setCreateItemVisible(true)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Plus size={22} color={colors.text} />
+          </TouchableOpacity>
+        }
       />
+
+      {/* Paste Clipboard Banner */}
+      {clipboard && (
+        <View
+          style={[
+            styles.clipboardBanner,
+            { backgroundColor: colors.primaryLight, borderColor: colors.primary },
+          ]}
+        >
+          <View style={styles.clipboardTextGroup}>
+            <Text style={[typography.labelMedium, { color: colors.primary, fontWeight: '700' }]}>
+              {clipboard.mode === 'copy' ? 'Copying' : 'Moving'} {clipboard.items.length} item(s)
+            </Text>
+            <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+              Ready to paste in Root Storage
+            </Text>
+          </View>
+          <View style={styles.clipboardActions}>
+            <TouchableOpacity
+              style={[styles.pasteBtn, { backgroundColor: colors.primary }]}
+              onPress={() => pasteClipboard('/storage/emulated/0')}
+            >
+              <ClipboardPaste size={16} color="#FFFFFF" />
+              <Text style={[typography.labelMedium, { color: '#FFFFFF', marginLeft: 4 }]}>
+                Paste
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={clearClipboard} style={styles.cancelPasteBtn}>
+              <X size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       <FlatList
         data={displayedFiles}
@@ -246,10 +498,16 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
 
               <View style={styles.storageStatsRow}>
                 <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
-                  Used: <Text style={{ fontWeight: '600', color: colors.text }}>{formatBytes(primaryVolume.usedBytes)}</Text>
+                  Used:{' '}
+                  <Text style={{ fontWeight: '600', color: colors.text }}>
+                    {formatBytes(primaryVolume.usedBytes)}
+                  </Text>
                 </Text>
                 <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
-                  Free: <Text style={{ fontWeight: '600', color: colors.text }}>{formatBytes(primaryVolume.freeBytes)}</Text>
+                  Free:{' '}
+                  <Text style={{ fontWeight: '600', color: colors.text }}>
+                    {formatBytes(primaryVolume.freeBytes)}
+                  </Text>
                 </Text>
               </View>
             </Card>
@@ -286,6 +544,43 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
               </View>
             )}
 
+            {/* Pinned Favorites Quick Access Strip */}
+            {favoriteFiles.length > 0 && (
+              <View style={styles.favoritesSection}>
+                <View style={styles.favHeaderRow}>
+                  <Star size={16} color="#FFB300" fill="#FFB300" style={{ marginRight: 6 }} />
+                  <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700' }]}>
+                    Pinned Favorites ({favoriteFiles.length})
+                  </Text>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.favScroll}>
+                  {favoriteFiles.map((fav) => (
+                    <TouchableOpacity
+                      key={fav.id}
+                      style={[
+                        styles.favCard,
+                        { backgroundColor: colors.surfaceVariant, borderColor: colors.border },
+                      ]}
+                      onPress={() => handleFilePress(fav)}
+                      activeOpacity={0.7}
+                    >
+                      {fav.isDirectory ? (
+                        <Folder size={18} color={colors.primary} />
+                      ) : (
+                        <FileCode size={18} color="#00C853" />
+                      )}
+                      <Text
+                        style={[typography.labelSmall, { color: colors.text, marginLeft: 6, maxWidth: 100 }]}
+                        numberOfLines={1}
+                      >
+                        {fav.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
             {/* Categories */}
             <View style={styles.sectionTitleRow}>
               <Text style={[typography.h3, { color: colors.text }]}>Categories</Text>
@@ -296,8 +591,12 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
               onSelectCategory={(cat) => {
                 if (cat === 'images') {
                   navigation.navigate('ImagesGalleryScreen');
+                } else if (cat === 'videos') {
+                  navigation.navigate('VideosGalleryScreen');
+                } else if (cat === 'all') {
+                  setActiveCategory('all');
                 } else {
-                  setActiveCategory(cat);
+                  navigation.navigate('CategoryFilesScreen', { category: cat });
                 }
               }}
             />
@@ -364,9 +663,11 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
             setClipboard('move', selected);
           }}
           onDelete={() => setConfirmBatchDelete(true)}
-          onShare={() => {
-            console.log('Share files');
-          }}
+          onShare={handleBatchShare}
+          onCompress={() => setBatchCompressVisible(true)}
+          onLockInVault={handleBatchLockInVault}
+          onSelectAll={selectAll}
+          onInvertSelection={() => invertSelection(displayedFiles)}
           onRename={
             selectedFileIds.size === 1
               ? () => {
@@ -383,12 +684,114 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
                 }
               : undefined
           }
-          onSelectAll={selectAll}
           onClose={clearSelection}
         />
       )}
 
-      {/* Modals & Dialogs */}
+      {/* 3-Dots Item Action Modal (Context Menu for single file/folder) */}
+      <ItemActionModal
+        visible={Boolean(actionModalItem)}
+        item={actionModalItem}
+        onClose={() => setActionModalItem(null)}
+        onOpenWith={(item) => fileService.openWith(item.path)}
+        onShare={(item) => fileService.shareFiles([item.path])}
+        onCopy={(item) => setClipboard('copy', [item])}
+        onMove={(item) => setClipboard('move', [item])}
+        onRename={(item) => setRenameItemTarget(item)}
+        onCompress={(item) => setCompressTargetItem(item)}
+        onExtract={async (item) => {
+          try {
+            await extractArchive(item.path);
+            Alert.alert('Extracted', `"${item.name}" unpacked successfully.`);
+          } catch (e: any) {
+            Alert.alert('Extraction Failed', e?.message || 'Could not unpack archive');
+          }
+        }}
+        onToggleFavorite={(item) => toggleFavorite(item.path)}
+        onToggleHide={async (item) => {
+          if (item.name.startsWith('.')) {
+            await unhideItem(item.path);
+          } else {
+            await hideItem(item.path);
+          }
+        }}
+        onLockInVault={handleLockInVault}
+        onDetails={(item) => setDetailsItem(item)}
+        onChecksum={(item) => setChecksumItem(item)}
+        onDelete={(item) => setDeleteTarget(item)}
+      />
+
+      {/* Create Folder or Blank File Dialog */}
+      <CreateItemDialog
+        visible={createItemVisible}
+        onCreateFolder={async (name) => {
+          await createFolder(name, '/storage/emulated/0');
+          setCreateItemVisible(false);
+        }}
+        onCreateFile={async (name, content) => {
+          await createFile(name, content, '/storage/emulated/0');
+          setCreateItemVisible(false);
+        }}
+        onCancel={() => setCreateItemVisible(false)}
+      />
+
+      {/* Single Item Delete with Choice Dialog */}
+      <DeleteChoiceModal
+        visible={Boolean(deleteTarget)}
+        itemCount={1}
+        itemName={deleteTarget?.name}
+        onDelete={async (permanent) => {
+          if (deleteTarget) {
+            await deleteSingleWithChoice(deleteTarget.path, permanent);
+            setDeleteTarget(null);
+          }
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
+
+      {/* Batch Delete with Choice Dialog */}
+      <DeleteChoiceModal
+        visible={confirmBatchDelete}
+        itemCount={selectedFileIds.size}
+        onDelete={async (permanent) => {
+          const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id));
+          for (const item of selected) {
+            await fileService.delete(item.path, !permanent);
+          }
+          setConfirmBatchDelete(false);
+          clearSelection();
+          refresh();
+        }}
+        onCancel={() => setConfirmBatchDelete(false)}
+      />
+
+      {/* Single Item Compress Dialog */}
+      <CompressDialog
+        visible={Boolean(compressTargetItem)}
+        defaultName={compressTargetItem?.name ? `${compressTargetItem.name}.zip` : 'archive.zip'}
+        itemCount={1}
+        onCompress={async (zipName) => {
+          if (compressTargetItem) {
+            await compressSelected(zipName, '/storage/emulated/0');
+            setCompressTargetItem(null);
+          }
+        }}
+        onCancel={() => setCompressTargetItem(null)}
+      />
+
+      {/* Batch Compress Dialog */}
+      <CompressDialog
+        visible={batchCompressVisible}
+        defaultName="Archive.zip"
+        itemCount={selectedFileIds.size}
+        onCompress={async (zipName) => {
+          await compressSelected(zipName, '/storage/emulated/0');
+          setBatchCompressVisible(false);
+        }}
+        onCancel={() => setBatchCompressVisible(false)}
+      />
+
+      {/* Sort & Filter Modal */}
       <SortFilterModal
         visible={filterModalVisible}
         onClose={() => setFilterModalVisible(false)}
@@ -401,6 +804,7 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         onToggleShowHidden={toggleShowHidden}
       />
 
+      {/* File Details Modal */}
       <FileDetailsModal
         visible={Boolean(detailsItem)}
         item={detailsItem}
@@ -408,6 +812,7 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         onOpenChecksum={(item) => setChecksumItem(item)}
       />
 
+      {/* Rename Dialog */}
       <RenameDialog
         visible={Boolean(renameItemTarget)}
         initialName={renameItemTarget?.name || ''}
@@ -420,23 +825,22 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         onCancel={() => setRenameItemTarget(null)}
       />
 
-      <ConfirmDialog
-        visible={confirmBatchDelete}
-        title="Delete Selected Files"
-        message={`Are you sure you want to move ${selectedFileIds.size} file(s) to the Recycle Bin?`}
-        confirmTitle="Delete"
-        isDestructive
-        onConfirm={async () => {
-          await deleteSelected();
-          setConfirmBatchDelete(false);
-        }}
-        onCancel={() => setConfirmBatchDelete(false)}
-      />
-
+      {/* Checksum Modal */}
       <ChecksumModal
         visible={Boolean(checksumItem)}
         item={checksumItem}
         onClose={() => setChecksumItem(null)}
+      />
+
+      {/* Set Vault Passcode Modal */}
+      <SetVaultPinModal
+        visible={setPinModalVisible}
+        onPinSet={handlePinCreated}
+        onCancel={() => {
+          setSetPinModalVisible(false);
+          setPendingVaultItem(null);
+          setPendingBatchVault(false);
+        }}
       />
     </View>
   );
@@ -445,6 +849,13 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  headerActionBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   listContent: {
     paddingBottom: spacing.xxl,
@@ -492,5 +903,85 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: borderRadius.sm,
+  },
+  clipboardBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.base,
+    paddingVertical: spacing.sm,
+    borderWidth: 1,
+    marginHorizontal: spacing.base,
+    marginTop: spacing.sm,
+    borderRadius: borderRadius.md,
+  },
+  clipboardTextGroup: {
+    flex: 1,
+  },
+  clipboardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  pasteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs + 2,
+    borderRadius: borderRadius.sm,
+  },
+  cancelPasteBtn: {
+    padding: spacing.xs,
+  },
+  favoritesSection: {
+    marginHorizontal: spacing.base,
+    marginTop: spacing.md,
+  },
+  favHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.xs,
+  },
+  favScroll: {
+    gap: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  favCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+  },
+  // Two-Finger Pull Down Indicator Banner
+  twoFingerPullBanner: {
+    position: 'absolute',
+    top: 60,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  twoFingerPullPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E1E24',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#69F0AE',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 5,
+  },
+  twoFingerPullText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
 });

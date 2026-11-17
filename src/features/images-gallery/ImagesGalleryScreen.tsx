@@ -12,6 +12,7 @@ import {
   BackHandler,
   Modal,
   StatusBar,
+  Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,13 +23,19 @@ import {
   Layers,
   ArrowLeft,
   CheckCircle2,
+  Check,
+  CheckSquare,
+  RefreshCw,
   Share2,
   ExternalLink,
   Calendar,
   HardDrive,
   X,
+  MoreVertical,
 } from 'lucide-react-native';
 import { useThemeStore } from '../../app/store/useThemeStore';
+import { useFileStore } from '../../app/store/useFileStore';
+import { useVaultStore } from '../../app/store/useVaultStore';
 import { typography } from '../../theme/typography';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { FileItem } from '../../types/file';
@@ -36,6 +43,14 @@ import { fileService } from '../../services/filesystem/fileService';
 import { sharingService } from '../../services/transfer/sharingService';
 import { formatBytes, formatDate } from '../../utils/formatters';
 import { EmptyState } from '../../components/common/EmptyState';
+import { FileActionSheet } from '../../components/file/FileActionSheet';
+import { ItemActionModal } from '../../components/dialogs/ItemActionModal';
+import { DeleteChoiceModal } from '../../components/dialogs/DeleteChoiceModal';
+import { RenameDialog } from '../../components/dialogs/RenameDialog';
+import { CompressDialog } from '../../components/dialogs/CompressDialog';
+import { FileDetailsModal } from '../../components/dialogs/FileDetailsModal';
+import { ChecksumModal } from '../../components/dialogs/ChecksumModal';
+import { SetVaultPinModal } from '../../components/dialogs/SetVaultPinModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_GAP = 2;
@@ -168,6 +183,68 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const [activeTab, setActiveTab] = useState<'all' | 'folders'>('all');
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
 
+  const {
+    renameItem,
+    deleteSingleWithChoice,
+    compressSelected,
+    hideItem,
+    unhideItem,
+    toggleFavorite,
+    setClipboard,
+  } = useFileStore();
+
+  const [actionModalItem, setActionModalItem] = useState<FileItem | null>(null);
+  const [detailsItem, setDetailsItem] = useState<FileItem | null>(null);
+  const [renameItemTarget, setRenameItemTarget] = useState<FileItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<FileItem | null>(null);
+  const [compressTargetItem, setCompressTargetItem] = useState<FileItem | null>(null);
+  const [checksumItem, setChecksumItem] = useState<FileItem | null>(null);
+  const [setPinModalVisible, setSetPinModalVisible] = useState(false);
+  const [pendingVaultItem, setPendingVaultItem] = useState<FileItem | null>(null);
+
+  // Multi-select state
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
+  const isSelectionMode = selectedFileIds.size > 0;
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  const [pendingBatchVault, setPendingBatchVault] = useState(false);
+
+  const handleLockInVault = async (item: FileItem) => {
+    const { isPinSet, importFileToVault } = useVaultStore.getState();
+    if (!isPinSet) {
+      setPendingVaultItem(item);
+      setPendingBatchVault(false);
+      setSetPinModalVisible(true);
+      return;
+    }
+    try {
+      await importFileToVault(item.path, '0000');
+      Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
+      loadImages();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to lock file in vault');
+    }
+  };
+
+  const handlePinCreated = async (pin: string) => {
+    useVaultStore.getState().setPin(pin, true);
+    setSetPinModalVisible(false);
+    if (pendingBatchVault) {
+      setPendingBatchVault(false);
+      const list = activeTab === 'folders' && selectedFolder ? folderImages : images;
+      const selected = list.filter((f) => selectedFileIds.has(f.id));
+      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
+      clearSelection();
+      Alert.alert('Passcode Set & Secured', `${selected.length} image(s) locked in Private Folder.`);
+      loadImages();
+    } else if (pendingVaultItem) {
+      const it = pendingVaultItem;
+      setPendingVaultItem(null);
+      await useVaultStore.getState().importFileToVault(it.path, pin);
+      Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
+      loadImages();
+    }
+  };
+
   const loadImages = async () => {
     setIsLoading(true);
     try {
@@ -229,24 +306,119 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
     return buildTimelineItems(folderImages);
   }, [selectedFolder, folderImages]);
 
+  // Active current images list
+  const currentImagesList = useMemo(() => {
+    return activeTab === 'folders' && selectedFolder ? folderImages : images;
+  }, [activeTab, selectedFolder, folderImages, images]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedFileIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selectedFileIds.size === currentImagesList.length) {
+      setSelectedFileIds(new Set());
+    } else {
+      setSelectedFileIds(new Set(currentImagesList.map((f) => f.id)));
+    }
+  };
+
+  const invertSelection = () => {
+    const next = new Set<string>();
+    currentImagesList.forEach((f) => {
+      if (!selectedFileIds.has(f.id)) next.add(f.id);
+    });
+    setSelectedFileIds(next);
+  };
+
+  const clearSelection = () => {
+    setSelectedFileIds(new Set());
+  };
+
+  const handleBatchDelete = async (permanent: boolean) => {
+    const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
+    for (const item of selected) {
+      await fileService.delete(item.path, !permanent);
+    }
+    setConfirmBatchDelete(false);
+    clearSelection();
+    loadImages();
+  };
+
+  const handleBatchLockInVault = async () => {
+    const { isPinSet, importFilesToVault } = useVaultStore.getState();
+    const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
+    if (selected.length === 0) return;
+
+    if (!isPinSet) {
+      setPendingBatchVault(true);
+      setSetPinModalVisible(true);
+      return;
+    }
+
+    try {
+      await importFilesToVault(selected.map((item) => item.path), '0000');
+      clearSelection();
+      Alert.alert('Vault Secured', `${selected.length} image(s) locked in Private Folder.`);
+      loadImages();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to lock images in vault');
+    }
+  };
+
+  const handleBatchShare = () => {
+    const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
+    if (selected.length > 0) {
+      fileService.shareFiles(selected.map((s) => s.path));
+    }
+  };
+
   // Back handling: Step-by-step one by one:
-  // 1. Folder drilldown -> returns to Folder Wise albums list
-  // 2. Folder Wise tab -> returns to All Images tab
-  // 3. All Images tab -> returns to previous screen (Recent)
+  // 1. Selection mode -> clears selection
+  // 2. Folder drilldown -> returns to Folder Wise albums list
+  // 3. Folder Wise tab -> returns to All Images tab
+  // 4. All Images tab -> returns to previous screen (Recent)
   const handleBackPress = useCallback(() => {
-    if (activeTab === 'folders' && selectedFolder) {
+    if (isSelectionMode) {
+      clearSelection();
+    } else if (activeTab === 'folders' && selectedFolder) {
       setSelectedFolder(null);
     } else if (activeTab === 'folders') {
       setActiveTab('all');
     } else {
       navigation.goBack();
     }
-  }, [activeTab, selectedFolder, navigation]);
+  }, [isSelectionMode, activeTab, selectedFolder, navigation]);
 
   // Intercept Android hardware & gesture back button so it backs up one by one
   useFocusEffect(
     useCallback(() => {
       const onHardwareBack = () => {
+        if (isSelectionMode) {
+          clearSelection();
+          return true;
+        }
+        if (confirmBatchDelete) {
+          setConfirmBatchDelete(false);
+          return true;
+        }
+        if (deleteTarget) {
+          setDeleteTarget(null);
+          return true;
+        }
+        if (setPinModalVisible) {
+          setSetPinModalVisible(false);
+          return true;
+        }
+        if (actionModalItem) {
+          setActionModalItem(null);
+          return true;
+        }
         if (activeTab === 'folders' && selectedFolder) {
           setSelectedFolder(null);
           return true;
@@ -260,7 +432,7 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
 
       const subscription = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
       return () => subscription.remove();
-    }, [activeTab, selectedFolder])
+    }, [isSelectionMode, confirmBatchDelete, deleteTarget, setPinModalVisible, actionModalItem, activeTab, selectedFolder])
   );
 
   const handleImagePress = (item: FileItem) => {
@@ -300,17 +472,40 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
       <View style={styles.timelineRow}>
         {item.items.map((img, idx) => {
           const uri = img.thumbnailUri || `file://${img.path}`;
+          const isSelected = selectedFileIds.has(img.id);
           return (
             <TouchableOpacity
               key={img.id}
               style={[
                 styles.photoTile,
                 idx < item.items.length - 1 && { marginRight: GRID_GAP },
+                isSelected && { borderWidth: 2.5, borderColor: colors.primary },
               ]}
               activeOpacity={0.8}
-              onPress={() => handleImagePress(img)}
+              onPress={() => {
+                if (isSelectionMode) {
+                  toggleSelect(img.id);
+                } else {
+                  handleImagePress(img);
+                }
+              }}
+              onLongPress={() => toggleSelect(img.id)}
             >
               <Image source={{ uri }} style={styles.photoImage} resizeMode="cover" />
+
+              {/* Selection Check Badge */}
+              {isSelectionMode && (
+                <View
+                  style={[
+                    styles.selectionBadge,
+                    isSelected
+                      ? { backgroundColor: colors.primary }
+                      : { backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1.5, borderColor: '#FFFFFF' },
+                  ]}
+                >
+                  {isSelected && <Check size={14} color="#FFFFFF" strokeWidth={3} />}
+                </View>
+              )}
             </TouchableOpacity>
           );
         })}
@@ -386,22 +581,83 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
           },
         ]}
       >
-        <TouchableOpacity
-          onPress={handleBackPress}
-          style={styles.backButton}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-        >
-          <ChevronLeft size={26} color={colors.text} />
-        </TouchableOpacity>
+        {isSelectionMode ? (
+          <>
+            <TouchableOpacity
+              onPress={clearSelection}
+              style={styles.backButton}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <X size={24} color={colors.text} />
+            </TouchableOpacity>
 
-        <View style={styles.headerTitleContainer}>
-          <Text style={[typography.h3, { color: colors.text }]} numberOfLines={1}>
-            {titleText}
-          </Text>
-          <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
-            {subtitleText}
-          </Text>
-        </View>
+            <View style={styles.headerTitleContainer}>
+              <Text style={[typography.h4, { color: colors.text, fontWeight: '700' }]}>
+                {selectedFileIds.size} Selected
+              </Text>
+            </View>
+
+            <View style={styles.headerSelectionControls}>
+              <TouchableOpacity
+                onPress={invertSelection}
+                style={[styles.headerControlBtn, { backgroundColor: colors.surfaceVariant }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <RefreshCw size={14} color={colors.primary} />
+                <Text style={[typography.labelSmall, { color: colors.primary, marginLeft: 4 }]}>
+                  Invert
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={selectAll}
+                style={[styles.headerControlBtn, { backgroundColor: colors.surfaceVariant, marginLeft: 8 }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <CheckSquare size={14} color={colors.primary} />
+                <Text style={[typography.labelSmall, { color: colors.primary, marginLeft: 4 }]}>
+                  {selectedFileIds.size === currentImagesList.length ? 'Clear' : 'All'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity
+              onPress={handleBackPress}
+              style={styles.backButton}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <ChevronLeft size={26} color={colors.text} />
+            </TouchableOpacity>
+
+            <View style={styles.headerTitleContainer}>
+              <Text style={[typography.h3, { color: colors.text }]} numberOfLines={1}>
+                {titleText}
+              </Text>
+              <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                {subtitleText}
+              </Text>
+            </View>
+
+            {(activeTab === 'all' || selectedFolder) && currentImagesList.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  if (currentImagesList.length > 0) {
+                    toggleSelect(currentImagesList[0].id);
+                  }
+                }}
+                style={[styles.selectHeaderBtn, { backgroundColor: colors.surfaceVariant }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <CheckSquare size={15} color={colors.primary} />
+                <Text style={[typography.labelSmall, { color: colors.primary, marginLeft: 4, fontWeight: '700' }]}>
+                  Select
+                </Text>
+              </TouchableOpacity>
+            )}
+          </>
+        )}
       </View>
 
       {/* Main Content Area */}
@@ -496,74 +752,202 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         )}
       </View>
 
-      {/* Bottom Navigation with 2 Options: All Images, Folder Wise Images */}
-      <View
-        style={[
-          styles.bottomNavContainer,
-          {
-            backgroundColor: colors.surface,
-            borderTopColor: colors.border,
-            paddingBottom: Math.max(insets.bottom, spacing.xs),
-          },
-        ]}
-      >
-        <TouchableOpacity
-          style={[
-            styles.bottomTabItem,
-            activeTab === 'all' && [styles.bottomTabItemActive, { backgroundColor: `${colors.primary}18` }],
-          ]}
-          onPress={() => {
-            setActiveTab('all');
-            setSelectedFolder(null);
+      {/* Bottom Area: Action Sheet in Selection Mode OR Bottom Tab Navigation */}
+      {isSelectionMode ? (
+        <FileActionSheet
+          selectedCount={selectedFileIds.size}
+          totalCount={currentImagesList.length}
+          onCopy={() => {
+            const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
+            setClipboard('copy', selected);
           }}
-          activeOpacity={0.7}
+          onMove={() => {
+            const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
+            setClipboard('move', selected);
+          }}
+          onDelete={() => setConfirmBatchDelete(true)}
+          onShare={handleBatchShare}
+          onLockInVault={handleBatchLockInVault}
+          onSelectAll={selectAll}
+          onInvertSelection={invertSelection}
+          onClose={clearSelection}
+        />
+      ) : (
+        /* Bottom Navigation with 2 Options: All Images, Folder Wise Images */
+        <View
+          style={[
+            styles.bottomNavContainer,
+            {
+              backgroundColor: colors.surface,
+              borderTopColor: colors.border,
+              paddingBottom: Math.max(insets.bottom, spacing.xs),
+            },
+          ]}
         >
-          <ImageIcon
-            size={22}
-            color={activeTab === 'all' ? colors.primary : colors.textMuted}
-          />
-          <Text
+          <TouchableOpacity
             style={[
-              typography.labelMedium,
-              {
-                color: activeTab === 'all' ? colors.primary : colors.textMuted,
-                fontWeight: activeTab === 'all' ? '700' : '500',
-                marginTop: 2,
-              },
+              styles.bottomTabItem,
+              activeTab === 'all' && [styles.bottomTabItemActive, { backgroundColor: `${colors.primary}18` }],
             ]}
+            onPress={() => {
+              setActiveTab('all');
+              setSelectedFolder(null);
+            }}
+            activeOpacity={0.7}
           >
-            All Images
-          </Text>
-        </TouchableOpacity>
+            <ImageIcon
+              size={22}
+              color={activeTab === 'all' ? colors.primary : colors.textMuted}
+            />
+            <Text
+              style={[
+                typography.labelMedium,
+                {
+                  color: activeTab === 'all' ? colors.primary : colors.textMuted,
+                  fontWeight: activeTab === 'all' ? '700' : '500',
+                  marginTop: 2,
+                },
+              ]}
+            >
+              All Images
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[
-            styles.bottomTabItem,
-            activeTab === 'folders' && [styles.bottomTabItemActive, { backgroundColor: `${colors.primary}18` }],
-          ]}
-          onPress={() => {
-            setActiveTab('folders');
-          }}
-          activeOpacity={0.7}
-        >
-          <Folder
-            size={22}
-            color={activeTab === 'folders' ? colors.primary : colors.textMuted}
-          />
-          <Text
+          <TouchableOpacity
             style={[
-              typography.labelMedium,
-              {
-                color: activeTab === 'folders' ? colors.primary : colors.textMuted,
-                fontWeight: activeTab === 'folders' ? '700' : '500',
-                marginTop: 2,
-              },
+              styles.bottomTabItem,
+              activeTab === 'folders' && [styles.bottomTabItemActive, { backgroundColor: `${colors.primary}18` }],
             ]}
+            onPress={() => {
+              setActiveTab('folders');
+            }}
+            activeOpacity={0.7}
           >
-            Folder Wise Images
-          </Text>
-        </TouchableOpacity>
-      </View>
+            <Folder
+              size={22}
+              color={activeTab === 'folders' ? colors.primary : colors.textMuted}
+            />
+            <Text
+              style={[
+                typography.labelMedium,
+                {
+                  color: activeTab === 'folders' ? colors.primary : colors.textMuted,
+                  fontWeight: activeTab === 'folders' ? '700' : '500',
+                  marginTop: 2,
+                },
+              ]}
+            >
+              Folder Wise Images
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Batch Delete with Choice Dialog */}
+      <DeleteChoiceModal
+        visible={confirmBatchDelete}
+        itemCount={selectedFileIds.size}
+        onDelete={handleBatchDelete}
+        onCancel={() => setConfirmBatchDelete(false)}
+      />
+
+      {/* 3-Dots Item Action Modal (Context Menu for single file/folder) */}
+      <ItemActionModal
+        visible={Boolean(actionModalItem)}
+        item={actionModalItem}
+        onClose={() => setActionModalItem(null)}
+        onOpenWith={(item) => fileService.openWith(item.path)}
+        onShare={(item) => fileService.shareFiles([item.path])}
+        onCopy={(item) => setClipboard('copy', [item])}
+        onMove={(item) => setClipboard('move', [item])}
+        onRename={(item) => setRenameItemTarget(item)}
+        onCompress={(item) => setCompressTargetItem(item)}
+        onToggleFavorite={(item) => {
+          toggleFavorite(item.path);
+          loadImages();
+        }}
+        onToggleHide={async (item) => {
+          if (item.name.startsWith('.')) {
+            await unhideItem(item.path);
+          } else {
+            await hideItem(item.path);
+          }
+          loadImages();
+        }}
+        onLockInVault={handleLockInVault}
+        onDetails={(item) => setDetailsItem(item)}
+        onChecksum={(item) => setChecksumItem(item)}
+        onDelete={(item) => setDeleteTarget(item)}
+      />
+
+      {/* Single Item Delete with Choice Dialog */}
+      <DeleteChoiceModal
+        visible={Boolean(deleteTarget)}
+        itemCount={1}
+        itemName={deleteTarget?.name}
+        onDelete={async (permanent) => {
+          if (deleteTarget) {
+            await deleteSingleWithChoice(deleteTarget.path, permanent);
+            setDeleteTarget(null);
+            loadImages();
+          }
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
+
+      {/* Single Item Compress Dialog */}
+      <CompressDialog
+        visible={Boolean(compressTargetItem)}
+        defaultName={compressTargetItem?.name ? `${compressTargetItem.name}.zip` : 'images.zip'}
+        itemCount={1}
+        onCompress={async (zipName) => {
+          if (compressTargetItem) {
+            await compressSelected(zipName, '/storage/emulated/0/DCIM');
+            setCompressTargetItem(null);
+            loadImages();
+          }
+        }}
+        onCancel={() => setCompressTargetItem(null)}
+      />
+
+      {/* File Details Modal */}
+      <FileDetailsModal
+        visible={Boolean(detailsItem)}
+        item={detailsItem}
+        onClose={() => setDetailsItem(null)}
+        onOpenChecksum={(item) => setChecksumItem(item)}
+      />
+
+      {/* Rename Dialog */}
+      <RenameDialog
+        visible={Boolean(renameItemTarget)}
+        initialName={renameItemTarget?.name || ''}
+        onRename={async (newName) => {
+          if (renameItemTarget) {
+            await renameItem(renameItemTarget.path, newName);
+            setRenameItemTarget(null);
+            loadImages();
+          }
+        }}
+        onCancel={() => setRenameItemTarget(null)}
+      />
+
+      {/* Checksum Modal */}
+      <ChecksumModal
+        visible={Boolean(checksumItem)}
+        item={checksumItem}
+        onClose={() => setChecksumItem(null)}
+      />
+
+      {/* Set Vault Passcode Modal */}
+      <SetVaultPinModal
+        visible={setPinModalVisible}
+        onPinSet={handlePinCreated}
+        onCancel={() => {
+          setSetPinModalVisible(false);
+          setPendingVaultItem(null);
+        }}
+      />
     </View>
   );
 };
@@ -600,6 +984,35 @@ const styles = StyleSheet.create({
     width: ITEM_SIZE,
     height: ITEM_SIZE,
     backgroundColor: '#1E1E1E',
+    position: 'relative',
+  },
+  selectionBadge: {
+    position: 'absolute',
+    top: spacing.xs,
+    right: spacing.xs,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerSelectionControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerControlBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs + 1,
+    borderRadius: borderRadius.md,
+  },
+  selectHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: spacing.xs + 2,
+    borderRadius: borderRadius.md,
   },
   timelineContent: {
     paddingBottom: spacing.base,

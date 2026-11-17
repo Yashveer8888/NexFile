@@ -17,6 +17,8 @@ import { AppManagerScreen } from '../../features/app-manager/AppManagerScreen';
 import { FileSharingScreen } from '../../features/file-sharing/FileSharingScreen';
 import { AiAssistantScreen } from '../../features/ai-assistant/AiAssistantScreen';
 import { ImagesGalleryScreen } from '../../features/images-gallery/ImagesGalleryScreen';
+import { VideosGalleryScreen } from '../../features/videos-gallery/VideosGalleryScreen';
+import { CategoryFilesScreen } from '../../features/categories/CategoryFilesScreen';
 import { ImageViewerScreen } from '../../features/image-viewer/ImageViewerScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -59,6 +61,8 @@ export const RootNavigator: React.FC = () => {
         <Stack.Screen name="FileSharingScreen" component={FileSharingScreen as any} />
         <Stack.Screen name="AiAssistantScreen" component={AiAssistantScreen} />
         <Stack.Screen name="ImagesGalleryScreen" component={ImagesGalleryScreen} />
+        <Stack.Screen name="VideosGalleryScreen" component={VideosGalleryScreen} />
+        <Stack.Screen name="CategoryFilesScreen" component={CategoryFilesScreen as any} />
         <Stack.Screen
           name="ImageViewerScreen"
           component={ImageViewerScreen as any}

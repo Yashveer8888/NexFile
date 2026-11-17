@@ -3,6 +3,8 @@ export interface VaultItem {
   name: string;
   originalPath: string;
   encryptedPath: string;
+  vaultFilePath?: string;
+  thumbnailUri?: string;
   category: 'images' | 'videos' | 'documents' | 'other';
   size: number;
   encryptedAt: number;
