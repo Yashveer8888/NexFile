@@ -7,6 +7,29 @@ class FileService {
   private favorites: Set<string> = new Set();
   private recycleBin: RecycleBinItem[] = [];
   private favoritesLoaded: boolean = false;
+  private dirCache: Map<string, { files: FileItem[]; timestamp: number }> = new Map();
+
+  getCachedDirectory(path: string, showHidden: boolean): FileItem[] | null {
+    const key = `${path}__${showHidden}`;
+    const cached = this.dirCache.get(key);
+    if (!cached) return null;
+    if (Date.now() - cached.timestamp < 30000) {
+      return cached.files;
+    }
+    return null;
+  }
+
+  clearDirectoryCache(path?: string): void {
+    if (path) {
+      for (const key of this.dirCache.keys()) {
+        if (key.startsWith(path)) {
+          this.dirCache.delete(key);
+        }
+      }
+    } else {
+      this.dirCache.clear();
+    }
+  }
 
   async initFavorites(): Promise<void> {
     if (this.favoritesLoaded) return;
@@ -28,12 +51,21 @@ class FileService {
     return await NativeBridgeService.getStorageVolumes();
   }
 
-  async listDirectory(path: string, showHidden: boolean = false): Promise<FileItem[]> {
+  async listDirectory(path: string, showHidden: boolean = false, forceRefresh: boolean = false): Promise<FileItem[]> {
+    const key = `${path}__${showHidden}`;
+    if (!forceRefresh) {
+      const cached = this.getCachedDirectory(path, showHidden);
+      if (cached) return cached;
+    }
+
     const items = await NativeBridgeService.listFiles(path, showHidden);
-    return items.map((item) => ({
+    const mapped = items.map((item) => ({
       ...item,
       isFavorite: this.favorites.has(item.path),
     }));
+
+    this.dirCache.set(key, { files: mapped, timestamp: Date.now() });
+    return mapped;
   }
 
   async getAllImages(): Promise<FileItem[]> {
@@ -90,16 +122,30 @@ class FileService {
   }
 
   async searchFiles(query: string, rootPath?: string, extension?: string): Promise<FileItem[]> {
-    const allFiles = NativeBridgeService.getAllMockFiles();
+    let allFiles = await NativeBridgeService.getRecentFiles(3000);
+    if (!allFiles || allFiles.length === 0) {
+      allFiles = NativeBridgeService.getAllMockFiles();
+    }
     const cleanQuery = query.toLowerCase().trim();
     const cleanExt = extension ? extension.toLowerCase().replace(/^\./, '') : null;
 
-    return allFiles.filter((file) => {
-      if (rootPath && !file.path.startsWith(rootPath)) return false;
-      if (cleanExt && file.extension.toLowerCase() !== cleanExt) return false;
-      if (!cleanQuery) return true;
-      return file.name.toLowerCase().includes(cleanQuery);
-    });
+    return allFiles
+      .filter((file) => {
+        if (!isUsefulRecentFile(file)) return false;
+        if (rootPath && !file.path.startsWith(rootPath)) return false;
+        if (cleanExt && file.extension.toLowerCase() !== cleanExt) return false;
+        if (!cleanQuery) return true;
+        return (
+          file.name.toLowerCase().includes(cleanQuery) ||
+          (file.extension && file.extension.toLowerCase().includes(cleanQuery))
+        );
+      })
+      .sort((a, b) => b.lastModified - a.lastModified)
+      .map((item) => ({
+        ...item,
+        parentFolder: item.parentFolder || extractParentFolder(item.path),
+        isFavorite: this.favorites.has(item.path),
+      }));
   }
 
   sortFiles(items: FileItem[], field: SortField, order: SortOrder): FileItem[] {
@@ -110,28 +156,36 @@ class FileService {
 
       let comparison = 0;
       switch (field) {
-        case 'name':
-          comparison = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        case 'name': {
+          const nameA = (a.name || '').toLowerCase();
+          const nameB = (b.name || '').toLowerCase();
+          comparison = nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
           break;
+        }
         case 'date':
           comparison = a.lastModified - b.lastModified;
           break;
         case 'size':
           comparison = a.size - b.size;
           break;
-        case 'type':
-          comparison = (a.extension || '').localeCompare(b.extension || '');
+        case 'type': {
+          const extA = (a.extension || '').toLowerCase();
+          const extB = (b.extension || '').toLowerCase();
+          comparison = extA < extB ? -1 : extA > extB ? 1 : 0;
           break;
+        }
       }
       return order === 'asc' ? comparison : -comparison;
     });
   }
 
   async createFolder(parentPath: string, folderName: string): Promise<string> {
+    this.clearDirectoryCache(parentPath);
     return await NativeBridgeService.createDirectory(parentPath, folderName);
   }
 
   async createFile(parentPath: string, fileName: string, content: string = ''): Promise<string> {
+    this.clearDirectoryCache(parentPath);
     return await NativeBridgeService.createFile(parentPath, fileName, content);
   }
 
@@ -144,6 +198,7 @@ class FileService {
   }
 
   async rename(path: string, newName: string): Promise<string> {
+    this.clearDirectoryCache();
     const newPath = await NativeBridgeService.renameItem(path, newName);
     if (this.favorites.has(path)) {
       this.favorites.delete(path);
@@ -185,6 +240,7 @@ class FileService {
   }
 
   async delete(path: string, useRecycleBin: boolean = true): Promise<boolean> {
+    this.clearDirectoryCache();
     if (useRecycleBin) {
       const all = NativeBridgeService.getAllMockFiles(true);
       const target = all.find((f) => f.path === path);
@@ -204,10 +260,12 @@ class FileService {
   }
 
   async copy(sourcePath: string, destDirPath: string): Promise<string> {
+    this.clearDirectoryCache(destDirPath);
     return await NativeBridgeService.copyItem(sourcePath, destDirPath);
   }
 
   async move(sourcePath: string, destDirPath: string): Promise<string> {
+    this.clearDirectoryCache();
     return await NativeBridgeService.moveItem(sourcePath, destDirPath);
   }
 

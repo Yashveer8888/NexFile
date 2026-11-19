@@ -31,80 +31,98 @@ interface FileGridItemProps {
   isSelectionMode: boolean;
 }
 
-export const FileGridItem: React.FC<FileGridItemProps> = ({
-  item,
-  onPress,
-  onLongPress,
-  isSelected,
-  isSelectionMode,
-}) => {
-  const { colors } = useThemeStore();
+export const FileGridItem = React.memo<FileGridItemProps>(
+  ({
+    item,
+    onPress,
+    onLongPress,
+    isSelected,
+    isSelectionMode,
+  }) => {
+    const { colors } = useThemeStore();
 
-  const handlePress = () => {
-    if (isSelectionMode) {
-      triggerHaptic('selection');
-    }
-    onPress(item);
-  };
+    const handlePress = React.useCallback(() => {
+      if (isSelectionMode) {
+        triggerHaptic('selection');
+      }
+      onPress(item);
+    }, [isSelectionMode, onPress, item]);
 
-  const handleLongPress = () => {
-    triggerHaptic('medium');
-    onLongPress(item);
-  };
+    const handleLongPress = React.useCallback(() => {
+      triggerHaptic('medium');
+      onLongPress(item);
+    }, [onLongPress, item]);
 
-  return (
-    <TouchableOpacity
-      style={[
-        styles.container,
-        {
-          width: ITEM_WIDTH,
-          backgroundColor: isSelected ? colors.primaryLight : colors.card,
-          borderColor: isSelected ? colors.primary : colors.cardBorder,
-        },
-      ]}
-      onPress={handlePress}
-      onLongPress={handleLongPress}
-      activeOpacity={0.7}
-      delayLongPress={300}
-    >
-      {isSelectionMode && (
-        <View style={styles.selectionBadge}>
-          {isSelected ? (
-            <CheckCircle2 size={18} color={colors.primary} fill="#FFFFFF" />
-          ) : (
-            <Circle size={18} color={colors.textMuted} />
-          )}
-        </View>
-      )}
+    const subtitle = item.isDirectory
+      ? (item.itemCount !== undefined && item.itemCount >= 0
+          ? `${item.itemCount} items`
+          : 'Folder')
+      : (item.parentFolder ? `${item.parentFolder} • ${formatBytes(item.size)}` : formatBytes(item.size));
 
-      {item.isFavorite && (
-        <View style={styles.starBadge}>
-          <Star size={12} color="#F59E0B" fill="#F59E0B" />
-        </View>
-      )}
-
-      <View style={styles.iconWrapper}>
-        <FileIcon item={item} size={56} iconSize={28} />
-      </View>
-
-      <Text
-        style={[typography.labelMedium, { color: colors.text, textAlign: 'center', marginTop: spacing.sm }]}
-        numberOfLines={1}
+    return (
+      <TouchableOpacity
+        style={[
+          styles.container,
+          {
+            width: ITEM_WIDTH,
+            backgroundColor: isSelected ? colors.primaryLight : colors.card,
+            borderColor: isSelected ? colors.primary : colors.cardBorder,
+          },
+        ]}
+        onPress={handlePress}
+        onLongPress={handleLongPress}
+        activeOpacity={0.7}
+        delayLongPress={300}
       >
-        {item.name}
-      </Text>
+        {isSelectionMode && (
+          <View style={styles.selectionBadge}>
+            {isSelected ? (
+              <CheckCircle2 size={18} color={colors.primary} fill="#FFFFFF" />
+            ) : (
+              <Circle size={18} color={colors.textMuted} />
+            )}
+          </View>
+        )}
 
-      <Text
-        style={[typography.labelSmall, { color: colors.textMuted, textAlign: 'center', marginTop: 2 }]}
-        numberOfLines={1}
-      >
-        {item.isDirectory
-          ? `${item.itemCount ?? 0} items`
-          : (item.parentFolder ? `${item.parentFolder} • ${formatBytes(item.size)}` : formatBytes(item.size))}
-      </Text>
-    </TouchableOpacity>
-  );
-};
+        {item.isFavorite && (
+          <View style={styles.starBadge}>
+            <Star size={12} color="#F59E0B" fill="#F59E0B" />
+          </View>
+        )}
+
+        <View style={styles.iconWrapper}>
+          <FileIcon item={item} size={56} iconSize={28} />
+        </View>
+
+        <Text
+          style={[typography.labelMedium, { color: colors.text, textAlign: 'center', marginTop: spacing.sm }]}
+          numberOfLines={1}
+        >
+          {item.name}
+        </Text>
+
+        <Text
+          style={[typography.labelSmall, { color: colors.textMuted, textAlign: 'center', marginTop: 2 }]}
+          numberOfLines={1}
+        >
+          {subtitle}
+        </Text>
+      </TouchableOpacity>
+    );
+  },
+  (prev, next) => {
+    return (
+      prev.item.path === next.item.path &&
+      prev.item.lastModified === next.item.lastModified &&
+      prev.item.size === next.item.size &&
+      prev.item.isFavorite === next.item.isFavorite &&
+      prev.isSelected === next.isSelected &&
+      prev.isSelectionMode === next.isSelectionMode &&
+      prev.onPress === next.onPress &&
+      prev.onLongPress === next.onLongPress
+    );
+  }
+);
 
 const styles = StyleSheet.create({
   container: {

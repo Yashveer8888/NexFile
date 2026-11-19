@@ -1,24 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
   TouchableOpacity,
+  Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, History, X } from 'lucide-react-native';
+import { ArrowLeft, History, X, Clock } from 'lucide-react-native';
 import { useThemeStore } from '../../app/store/useThemeStore';
+import { useFileStore } from '../../app/store/useFileStore';
 import { typography } from '../../theme/typography';
 import { spacing, borderRadius } from '../../theme/spacing';
 import { SearchBar } from '../../components/common/SearchBar';
-import { CategoryChips } from '../../components/file/CategoryChips';
 import { FileItem } from '../../components/file/FileItem';
 import { FileDetailsModal } from '../../components/dialogs/FileDetailsModal';
 import { EmptyState } from '../../components/common/EmptyState';
-import { FileItem as FileItemType, FileCategory } from '../../types/file';
+import { FileItem as FileItemType } from '../../types/file';
 import { fileService } from '../../services/filesystem/fileService';
-import { isImageFile } from '../../utils/fileTypes';
+import { isImageFile, isAudioFile, isVideoFile } from '../../utils/fileTypes';
 
 export const SearchScreen: React.FC<{ navigation: any; route: any }> = ({
   navigation,
@@ -26,45 +27,102 @@ export const SearchScreen: React.FC<{ navigation: any; route: any }> = ({
 }) => {
   const insets = useSafeAreaInsets();
   const { colors } = useThemeStore();
-  const [query, setQuery] = useState(route.params?.initialQuery || '');
-  const [selectedCategory, setSelectedCategory] = useState<FileCategory>(
-    (route.params?.category as FileCategory) || 'all'
-  );
+  const { recentFiles } = useFileStore();
+
+  const [query, setQuery] = useState<string>(route?.params?.initialQuery || '');
   const [results, setResults] = useState<FileItemType[]>([]);
+  const [isSearching, setIsSearching] = useState<boolean>(false);
   const [recentQueries, setRecentQueries] = useState<string[]>([
-    'invoice',
-    'presentation',
+    'mp3',
+    'download',
     'screenshot',
-    'apk',
     '.pdf',
   ]);
   const [detailsItem, setDetailsItem] = useState<FileItemType | null>(null);
 
-  useEffect(() => {
-    performSearch();
-  }, [query, selectedCategory]);
-
-  const performSearch = async () => {
-    let files: FileItemType[] = [];
-    if (selectedCategory !== 'all') {
-      files = await fileService.getFilesByCategory(selectedCategory);
-      if (query.trim()) {
-        const q = query.toLowerCase().trim();
-        files = files.filter((f) => f.name.toLowerCase().includes(q));
-      }
-    } else {
-      files = await fileService.searchFiles(query);
+  const performSearch = useCallback(async (searchQuery: string) => {
+    const q = searchQuery.trim();
+    if (!q) {
+      setResults([]);
+      setIsSearching(false);
+      return;
     }
-    setResults(files);
-  };
+    setIsSearching(true);
+    try {
+      const found = await fileService.searchFiles(q);
+      setResults(found);
+    } catch {
+      setResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      performSearch(query);
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [query, performSearch]);
 
   const handleSelectRecentQuery = (item: string) => {
     setQuery(item);
   };
 
   const handleRemoveRecentQuery = (item: string) => {
-    setRecentQueries(recentQueries.filter((q) => q !== item));
+    setRecentQueries((prev) => prev.filter((q) => q !== item));
   };
+
+  const handleClearAllQueries = () => {
+    setRecentQueries([]);
+  };
+
+  const saveQueryToHistory = (searchedText: string) => {
+    const trimmed = searchedText.trim();
+    if (!trimmed) return;
+    setRecentQueries((prev) => [
+      trimmed,
+      ...prev.filter((q) => q.toLowerCase() !== trimmed.toLowerCase()),
+    ].slice(0, 10));
+  };
+
+  const handleFilePress = (f: FileItemType) => {
+    Keyboard.dismiss();
+    if (query.trim()) {
+      saveQueryToHistory(query.trim());
+    }
+
+    const activeList = query.trim() ? results : recentFiles;
+
+    if (f.isDirectory) {
+      navigation.navigate('FoldersTab');
+    } else if (isImageFile(f)) {
+      const images = activeList.filter((x) => isImageFile(x));
+      const idx = images.findIndex((x) => x.id === f.id);
+      navigation.navigate('ImageViewerScreen', {
+        images: images.length > 0 ? images : [f],
+        initialIndex: Math.max(0, idx),
+      });
+    } else if (isAudioFile(f)) {
+      const audios = activeList.filter((x) => isAudioFile(x));
+      navigation.navigate('AudioPlayerScreen', {
+        file: f,
+        playlist: audios.length > 0 ? audios : [f],
+      });
+    } else if (isVideoFile(f)) {
+      const videos = activeList.filter((x) => isVideoFile(x));
+      navigation.navigate('MediaPlayerScreen', {
+        file: f,
+        playlist: videos.length > 0 ? videos : [f],
+      });
+    } else {
+      fileService.openFile(f.path, f.mimeType);
+    }
+  };
+
+  const isQueryActive = Boolean(query.trim());
+  const displayedData = isQueryActive ? results : recentFiles;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
@@ -73,7 +131,7 @@ export const SearchScreen: React.FC<{ navigation: any; route: any }> = ({
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           style={styles.backBtn}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
           <ArrowLeft size={22} color={colors.text} />
         </TouchableOpacity>
@@ -88,72 +146,83 @@ export const SearchScreen: React.FC<{ navigation: any; route: any }> = ({
         </View>
       </View>
 
-      {/* Category filter pills */}
-      <View style={{ backgroundColor: colors.surface }}>
-        <CategoryChips
-          selectedCategory={selectedCategory}
-          onSelectCategory={setSelectedCategory}
-          isCompact
-        />
-      </View>
-
-      {/* Recent Searches (when query is empty) */}
-      {!query && recentQueries.length > 0 && (
-        <View style={styles.recentQueriesContainer}>
-          <Text style={[typography.labelMedium, { color: colors.textMuted, marginBottom: spacing.sm }]}>
-            RECENT SEARCHES
-          </Text>
-          <View style={styles.recentQueriesWrap}>
-            {recentQueries.map((item) => (
-              <TouchableOpacity
-                key={item}
-                style={[styles.recentChip, { backgroundColor: colors.surfaceVariant }]}
-                onPress={() => handleSelectRecentQuery(item)}
-              >
-                <History size={14} color={colors.textMuted} />
-                <Text style={[typography.bodySmall, { color: colors.text, marginHorizontal: 6 }]}>
-                  {item}
-                </Text>
-                <TouchableOpacity
-                  onPress={() => handleRemoveRecentQuery(item)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <X size={12} color={colors.textMuted} />
-                </TouchableOpacity>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
-
-      {/* Results Header */}
-      <View style={styles.resultsHeader}>
-        <Text style={[typography.labelMedium, { color: colors.textSecondary }]}>
-          {results.length} result(s) found
-        </Text>
-      </View>
-
-      {/* Results List */}
+      {/* Main List */}
       <FlatList
-        data={results}
-        keyExtractor={(item) => item.id}
+        data={displayedData}
+        keyExtractor={(item) => item.id || item.path}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.listContent}
+        ListHeaderComponent={
+          <View>
+            {/* Recent Searches Tag Cloud (only shown when query is empty) */}
+            {!isQueryActive && recentQueries.length > 0 && (
+              <View style={styles.recentQueriesContainer}>
+                <View style={styles.sectionHeaderRow}>
+                  <View style={styles.sectionTitleWithIcon}>
+                    <History size={16} color={colors.textMuted} />
+                    <Text style={[typography.labelMedium, { color: colors.textMuted, marginLeft: 6 }]}>
+                      RECENT SEARCHES
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={handleClearAllQueries}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={[typography.bodySmall, { color: colors.textMuted }]}>
+                      Clear All
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.recentQueriesWrap}>
+                  {recentQueries.map((item) => (
+                    <TouchableOpacity
+                      key={item}
+                      style={[styles.recentChip, { backgroundColor: colors.surfaceVariant }]}
+                      onPress={() => handleSelectRecentQuery(item)}
+                      activeOpacity={0.7}
+                    >
+                      <History size={13} color={colors.textMuted} />
+                      <Text style={[typography.bodySmall, { color: colors.text, marginHorizontal: 6 }]}>
+                        {item}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => handleRemoveRecentQuery(item)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <X size={12} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {/* Results or Recent Files Header */}
+            <View style={styles.resultsHeader}>
+              <View style={styles.sectionTitleWithIcon}>
+                {!isQueryActive ? (
+                  <>
+                    <Clock size={16} color={colors.primary} />
+                    <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700', marginLeft: 6 }]}>
+                      RECENT FILES ({recentFiles.length})
+                    </Text>
+                  </>
+                ) : (
+                  <Text style={[typography.labelMedium, { color: colors.textSecondary }]}>
+                    {isSearching
+                      ? 'Searching files...'
+                      : `${results.length} result(s) found for "${query}"`}
+                  </Text>
+                )}
+              </View>
+            </View>
+          </View>
+        }
         renderItem={({ item }) => (
           <FileItem
             item={item}
-            onPress={(f) => {
-              if (f.isDirectory) {
-                navigation.navigate('FoldersTab');
-              } else if (isImageFile(f)) {
-                const imageList = results.filter((x) => isImageFile(x));
-                const idx = imageList.findIndex((x) => x.id === f.id);
-                navigation.navigate('ImageViewerScreen', {
-                  images: imageList.length > 0 ? imageList : [f],
-                  initialIndex: Math.max(0, idx),
-                });
-              } else {
-                fileService.openFile(f.path, f.mimeType);
-              }
-            }}
+            onPress={handleFilePress}
             onLongPress={(f) => setDetailsItem(f)}
             onMorePress={(f) => setDetailsItem(f)}
             isSelected={false}
@@ -161,10 +230,12 @@ export const SearchScreen: React.FC<{ navigation: any; route: any }> = ({
           />
         )}
         ListEmptyComponent={
-          <EmptyState
-            title="No Results Found"
-            description={query ? `No files matching "${query}"` : 'Type a query or select a category.'}
-          />
+          isQueryActive && !isSearching ? (
+            <EmptyState
+              title="No Files Found"
+              description={`No files matching "${query}" were found on storage.`}
+            />
+          ) : undefined
         }
       />
 
@@ -195,9 +266,23 @@ const styles = StyleSheet.create({
   searchBarWrapper: {
     flex: 1,
   },
+  listContent: {
+    paddingBottom: spacing.xxl,
+  },
   recentQueriesContainer: {
     paddingHorizontal: spacing.base,
     paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+  },
+  sectionTitleWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   recentQueriesWrap: {
     flexDirection: 'row',
@@ -208,12 +293,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
+    paddingVertical: spacing.xs + 2,
     borderRadius: borderRadius.full,
   },
   resultsHeader: {
     paddingHorizontal: spacing.base,
-    paddingVertical: spacing.sm,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
   },
 });
-

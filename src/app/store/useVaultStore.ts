@@ -12,7 +12,7 @@ interface VaultState {
   biometricEnabled: boolean;
   isHydrated: boolean;
   items: VaultItem[];
-  activeCategory: 'all' | 'images' | 'videos' | 'documents' | 'other';
+  activeCategory: 'all' | 'images' | 'videos' | 'audio' | 'documents' | 'other';
   autoLockMinutes: number;
   lastUnlockedTime: number;
 
@@ -22,7 +22,7 @@ interface VaultState {
   unlockWithPin: (pin: string) => boolean;
   unlockWithBiometric: () => void;
   lockVault: () => void;
-  setActiveCategory: (cat: 'all' | 'images' | 'videos' | 'documents' | 'other') => void;
+  setActiveCategory: (cat: 'all' | 'images' | 'videos' | 'audio' | 'documents' | 'other') => void;
   importFileToVault: (sourcePath: string, pin: string) => Promise<VaultItem>;
   importFilesToVault: (sourcePaths: string[], pin: string) => Promise<VaultItem[]>;
   exportFileFromVault: (itemId: string, destDirPath: string, pin: string) => Promise<string>;
@@ -136,7 +136,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const ext = fileName.includes('.') ? fileName.split('.').pop() || '' : '';
     const rawCategory = getCategoryFromExtension(ext);
     const category =
-      rawCategory === 'images' || rawCategory === 'videos' || rawCategory === 'documents'
+      rawCategory === 'images' || rawCategory === 'videos' || rawCategory === 'audio' || rawCategory === 'documents'
         ? rawCategory
         : 'other';
 
@@ -206,7 +206,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         const ext = fileName.includes('.') ? fileName.split('.').pop() || '' : '';
         const rawCategory = getCategoryFromExtension(ext);
         const category =
-          rawCategory === 'images' || rawCategory === 'videos' || rawCategory === 'documents'
+          rawCategory === 'images' || rawCategory === 'videos' || rawCategory === 'audio' || rawCategory === 'documents'
             ? rawCategory
             : 'other';
 

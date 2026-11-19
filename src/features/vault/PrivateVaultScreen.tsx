@@ -314,10 +314,34 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
         file: fileItem,
         playlist: allVaultVideos.length > 0 ? allVaultVideos : [fileItem],
       });
-    } else if (isAudioFile(fileItem)) {
-      navigation.navigate('MediaPlayerScreen', {
+    } else if (item.category === 'audio' || isAudioFile(fileItem)) {
+      const allVaultAudios: FileItem[] = items
+        .filter((i) => {
+          const p = getItemFilePath(i);
+          const ext = i.name.split('.').pop()?.toLowerCase() || '';
+          return (
+            i.category === 'audio' ||
+            isAudioFile({ name: i.name, path: p, extension: ext, isDirectory: false } as any)
+          );
+        })
+        .map((i) => {
+          const p = getItemFilePath(i);
+          return {
+            id: i.id,
+            name: i.name,
+            path: p,
+            size: i.size,
+            lastModified: i.encryptedAt,
+            mimeType: i.mimeType,
+            extension: i.name.split('.').pop()?.toLowerCase() || '',
+            isDirectory: false,
+            category: 'audio' as const,
+          };
+        });
+
+      navigation.navigate('AudioPlayerScreen', {
         file: fileItem,
-        playlist: [fileItem],
+        playlist: allVaultAudios.length > 0 ? allVaultAudios : [fileItem],
       });
     } else {
       try {
@@ -876,13 +900,7 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
             <Text style={[typography.h3, { color: colors.text }]}>
               Private Files ({filteredItems.length})
             </Text>
-            <Button
-              title="Import File"
-              size="sm"
-              variant="primary"
-              icon={<Plus size={14} color="#FFFFFF" />}
-              onPress={() => setImportModalVisible(true)}
-            />
+            
           </View>
 
           {filteredItems.length === 0 ? (

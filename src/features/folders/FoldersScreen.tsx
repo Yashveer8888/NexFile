@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   BackHandler,
   Alert,
+  Modal,
+  Switch,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,6 +18,19 @@ import {
   ClipboardPaste,
   X,
   Plus,
+  LayoutGrid,
+  LayoutList,
+  MoreHorizontal,
+  ArrowUpDown,
+  Eye,
+  EyeOff,
+  Check,
+  ChevronRight,
+  ArrowDownAZ,
+  ArrowUpAZ,
+  Calendar,
+  HardDrive,
+  FileCode,
 } from 'lucide-react-native';
 import { useThemeStore } from '../../app/store/useThemeStore';
 import { useFileStore } from '../../app/store/useFileStore';
@@ -83,7 +98,27 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
   } = useFileStore();
 
   const [filterModalVisible, setFilterModalVisible] = useState(false);
+  const [folderMenuVisible, setFolderMenuVisible] = useState(false);
+  const [sortModalVisible, setSortModalVisible] = useState(false);
   const [createItemVisible, setCreateItemVisible] = useState(false);
+
+  const SORT_OPTIONS = [
+    { id: 'name_asc', field: 'name' as const, order: 'asc' as const, label: 'Name (A to Z)', icon: ArrowDownAZ },
+    { id: 'name_desc', field: 'name' as const, order: 'desc' as const, label: 'Name (Z to A)', icon: ArrowUpAZ },
+    { id: 'date_desc', field: 'date' as const, order: 'desc' as const, label: 'Modify (Newest first)', icon: Calendar },
+    { id: 'date_asc', field: 'date' as const, order: 'asc' as const, label: 'Old to New (Oldest first)', icon: Calendar },
+    { id: 'size_desc', field: 'size' as const, order: 'desc' as const, label: 'Size (Largest first)', icon: HardDrive },
+    { id: 'size_asc', field: 'size' as const, order: 'asc' as const, label: 'Size (Smallest first)', icon: HardDrive },
+    { id: 'type_asc', field: 'type' as const, order: 'asc' as const, label: 'File Type', icon: FileCode },
+  ];
+
+  const getCurrentSortLabel = (): string => {
+    if (sortBy === 'name') return sortOrder === 'asc' ? 'Name (A to Z)' : 'Name (Z to A)';
+    if (sortBy === 'date') return sortOrder === 'desc' ? 'Modify (Newest first)' : 'Old to New (Oldest first)';
+    if (sortBy === 'size') return sortOrder === 'desc' ? 'Size (Largest first)' : 'Size (Smallest first)';
+    if (sortBy === 'type') return 'File Type';
+    return 'Name (A to Z)';
+  };
   const [actionModalItem, setActionModalItem] = useState<FileItemType | null>(null);
   const [detailsItem, setDetailsItem] = useState<FileItemType | null>(null);
   const [renameItemTarget, setRenameItemTarget] = useState<FileItemType | null>(null);
@@ -104,6 +139,14 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
   useFocusEffect(
     useCallback(() => {
       const onHardwareBack = () => {
+        if (sortModalVisible) {
+          setSortModalVisible(false);
+          return true;
+        }
+        if (folderMenuVisible) {
+          setFolderMenuVisible(false);
+          return true;
+        }
         if (filterModalVisible) {
           setFilterModalVisible(false);
           return true;
@@ -175,36 +218,91 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
     ])
   );
 
-  const handleFilePress = (item: FileItemType) => {
-    if (isSelectionMode) {
+  const handleFilePress = useCallback(
+    (item: FileItemType) => {
+      if (isSelectionMode) {
+        toggleSelectFile(item.id);
+      } else if (item.isDirectory) {
+        enterDirectory(item);
+      } else if (isImageFile(item)) {
+        const currentFiles = useFileStore.getState().files;
+        const imageList = currentFiles.filter((f) => isImageFile(f));
+        const idx = imageList.findIndex((f) => f.id === item.id);
+        navigation.navigate('ImageViewerScreen', {
+          images: imageList.length > 0 ? imageList : [item],
+          initialIndex: Math.max(0, idx),
+        });
+      } else if (isAudioFile(item)) {
+        const currentFiles = useFileStore.getState().files;
+        const audioList = currentFiles.filter((f) => isAudioFile(f));
+        navigation.navigate('AudioPlayerScreen', {
+          file: item,
+          playlist: audioList.length > 0 ? audioList : [item],
+        });
+      } else if (isVideoFile(item)) {
+        const currentFiles = useFileStore.getState().files;
+        const videoList = currentFiles.filter((f) => isVideoFile(f));
+        navigation.navigate('MediaPlayerScreen', {
+          file: item,
+          playlist: videoList.length > 0 ? videoList : [item],
+        });
+      } else {
+        fileService.openFile(item.path, item.mimeType);
+      }
+    },
+    [isSelectionMode, toggleSelectFile, enterDirectory, navigation]
+  );
+
+  const handleFileLongPress = useCallback(
+    (item: FileItemType) => {
       toggleSelectFile(item.id);
-    } else if (item.isDirectory) {
-      enterDirectory(item);
-    } else if (isImageFile(item)) {
-      const imageList = files.filter((f) => isImageFile(f));
-      const idx = imageList.findIndex((f) => f.id === item.id);
-      navigation.navigate('ImageViewerScreen', {
-        images: imageList.length > 0 ? imageList : [item],
-        initialIndex: Math.max(0, idx),
-      });
-    } else if (isVideoFile(item) || isAudioFile(item)) {
-      const mediaList = files.filter((f) => isVideoFile(f) || isAudioFile(f));
-      navigation.navigate('MediaPlayerScreen', {
-        file: item,
-        playlist: mediaList.length > 0 ? mediaList : [item],
-      });
-    } else {
-      fileService.openFile(item.path, item.mimeType);
-    }
-  };
+    },
+    [toggleSelectFile]
+  );
 
-  const handleFileLongPress = (item: FileItemType) => {
-    toggleSelectFile(item.id);
-  };
-
-  const handleMorePress = (item: FileItemType) => {
+  const handleMorePress = useCallback((item: FileItemType) => {
     setActionModalItem(item);
-  };
+  }, []);
+
+  const keyExtractor = useCallback((item: FileItemType) => item.path || item.id, []);
+
+  const getItemLayout = useCallback(
+    (_: any, index: number) => ({
+      length: 64,
+      offset: 64 * index,
+      index,
+    }),
+    []
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: FileItemType }) => {
+      const isSelected = selectedFileIds.has(item.id);
+      if (viewMode === 'grid') {
+        return (
+          <FileGridItem
+            item={item}
+            onPress={handleFilePress}
+            onLongPress={handleFileLongPress}
+            onMorePress={handleMorePress}
+            isSelected={isSelected}
+            isSelectionMode={isSelectionMode}
+          />
+        );
+      }
+      return (
+        <FileItem
+          item={item}
+          onPress={handleFilePress}
+          onLongPress={handleFileLongPress}
+          onMorePress={handleMorePress}
+          isSelected={isSelected}
+          isSelectionMode={isSelectionMode}
+        />
+      );
+    },
+    [viewMode, selectedFileIds, isSelectionMode, handleFilePress, handleFileLongPress, handleMorePress]
+  );
 
   // Lock single file into private vault
   const handleLockInVault = async (item: FileItemType) => {
@@ -281,23 +379,59 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
         subtitle={breadcrumbs[breadcrumbs.length - 1]?.name}
         showBack={canGoBack}
         onBack={navigateUp}
-        showSearch
-        onSearchPress={() => navigation.navigate('SearchScreen')}
-        showFilter
-        onFilterPress={() => setFilterModalVisible(true)}
         rightActions={
           <TouchableOpacity
             style={styles.headerActionBtn}
             onPress={() => setCreateItemVisible(true)}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityLabel="Create item"
           >
             <Plus size={22} color={colors.text} />
           </TouchableOpacity>
         }
       />
 
-      {/* Breadcrumb Trail */}
-      <Breadcrumb items={breadcrumbs} onNavigate={(path) => loadDirectory(path)} />
+      {/* Breadcrumb Row with Grid/List Toggle and Three Horizontal Dots Options Menu */}
+      <View
+        style={[
+          styles.breadcrumbBar,
+          { backgroundColor: colors.surface, borderBottomColor: colors.border },
+        ]}
+      >
+        <View style={styles.breadcrumbFlex}>
+          <Breadcrumb
+            items={breadcrumbs}
+            onNavigate={(path) => loadDirectory(path)}
+            style={{ borderBottomWidth: 0, height: 44 }}
+          />
+        </View>
+
+        <View style={styles.breadcrumbActionsGroup}>
+          {/* 1. Toggle List / Grid View */}
+          <TouchableOpacity
+            style={styles.breadcrumbIconBtn}
+            onPress={() => setViewMode(viewMode === 'list' ? 'grid' : 'list')}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityLabel="Toggle list and grid view"
+          >
+            {viewMode === 'list' ? (
+              <LayoutGrid size={20} color={colors.text} />
+            ) : (
+              <LayoutList size={20} color={colors.text} />
+            )}
+          </TouchableOpacity>
+
+          {/* 2. Three Horizontal Dots Menu */}
+          <TouchableOpacity
+            style={styles.breadcrumbIconBtn}
+            onPress={() => setFolderMenuVisible(true)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityLabel="More options"
+          >
+            <MoreHorizontal size={20} color={colors.text} />
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {/* Paste Clipboard Banner */}
       {clipboard && (
@@ -330,36 +464,19 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
         data={files}
         key={viewMode}
         numColumns={viewMode === 'grid' ? 3 : 1}
-        keyExtractor={(item) => item.id}
+        keyExtractor={keyExtractor}
+        getItemLayout={viewMode === 'list' ? getItemLayout : undefined}
+        renderItem={renderItem}
+        extraData={selectedFileIds}
+        initialNumToRender={20}
+        maxToRenderPerBatch={20}
+        windowSize={5}
+        updateCellsBatchingPeriod={30}
+        removeClippedSubviews={true}
         refreshControl={
           <RefreshControl refreshing={isLoading} onRefresh={refresh} colors={[colors.primary]} />
         }
         contentContainerStyle={styles.listContent}
-        renderItem={({ item }) => {
-          const isSelected = selectedFileIds.has(item.id);
-          if (viewMode === 'grid') {
-            return (
-              <FileGridItem
-                item={item}
-                onPress={handleFilePress}
-                onLongPress={handleFileLongPress}
-                onMorePress={handleMorePress}
-                isSelected={isSelected}
-                isSelectionMode={isSelectionMode}
-              />
-            );
-          }
-          return (
-            <FileItem
-              item={item}
-              onPress={handleFilePress}
-              onLongPress={handleFileLongPress}
-              onMorePress={handleMorePress}
-              isSelected={isSelected}
-              isSelectionMode={isSelectionMode}
-            />
-          );
-        }}
         ListEmptyComponent={
           !isLoading ? (
             <EmptyState
@@ -565,6 +682,174 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
           setPendingBatchVault(false);
         }}
       />
+
+      {/* Folder Options Menu Modal (Three Horizontal Dots) */}
+      <Modal
+        visible={folderMenuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFolderMenuVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setFolderMenuVisible(false)}
+        >
+          <View
+            style={[
+              styles.optionsSheetBox,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.optionsSheetHeader}>
+              <Text style={[typography.h3, { color: colors.text }]}>Folder Options</Text>
+              <TouchableOpacity
+                onPress={() => setFolderMenuVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <X size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Option 1: Sort by */}
+            <TouchableOpacity
+              style={[styles.menuOptionRow, { borderBottomColor: colors.border }]}
+              onPress={() => {
+                setFolderMenuVisible(false);
+                setTimeout(() => setSortModalVisible(true), 200);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.menuOptionLeft}>
+                <View style={[styles.menuIconCircle, { backgroundColor: colors.primary + '18' }]}>
+                  <ArrowUpDown size={18} color={colors.primary} />
+                </View>
+                <View style={{ marginLeft: spacing.md, flex: 1 }}>
+                  <Text style={[typography.bodyMedium, { color: colors.text, fontWeight: '600' }]}>
+                    Sort by
+                  </Text>
+                  <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                    {getCurrentSortLabel()}
+                  </Text>
+                </View>
+              </View>
+              <ChevronRight size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+
+            {/* Option 2: Show hidden files */}
+            <TouchableOpacity
+              style={styles.menuOptionRow}
+              onPress={() => toggleShowHidden()}
+              activeOpacity={0.7}
+            >
+              <View style={styles.menuOptionLeft}>
+                <View
+                  style={[
+                    styles.menuIconCircle,
+                    {
+                      backgroundColor: showHidden
+                        ? colors.primary + '18'
+                        : colors.surfaceVariant,
+                    },
+                  ]}
+                >
+                  {showHidden ? (
+                    <Eye size={18} color={colors.primary} />
+                  ) : (
+                    <EyeOff size={18} color={colors.textMuted} />
+                  )}
+                </View>
+                <View style={{ marginLeft: spacing.md, flex: 1 }}>
+                  <Text style={[typography.bodyMedium, { color: colors.text, fontWeight: '600' }]}>
+                    Show hidden files
+                  </Text>
+                  <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                    {showHidden ? 'Hidden files visible' : 'Hidden files hidden'}
+                  </Text>
+                </View>
+              </View>
+              <Switch
+                value={showHidden}
+                onValueChange={() => toggleShowHidden()}
+                thumbColor={showHidden ? colors.primary : colors.surfaceVariant}
+                trackColor={{ false: colors.surfaceVariant, true: colors.primary + '40' }}
+              />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Sort By Modal */}
+      <Modal
+        visible={sortModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSortModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setSortModalVisible(false)}
+        >
+          <View
+            style={[
+              styles.optionsSheetBox,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.optionsSheetHeader}>
+              <Text style={[typography.h3, { color: colors.text }]}>Sort By</Text>
+              <TouchableOpacity
+                onPress={() => setSortModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <X size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {SORT_OPTIONS.map((opt) => {
+              const isSelected = sortBy === opt.field && sortOrder === opt.order;
+              const IconComp = opt.icon;
+              return (
+                <TouchableOpacity
+                  key={opt.id}
+                  style={[
+                    styles.sortOptionItem,
+                    isSelected && { backgroundColor: colors.primary + '15' },
+                  ]}
+                  onPress={() => {
+                    setSort(opt.field, opt.order);
+                    setSortModalVisible(false);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.sortOptionLeft}>
+                    <IconComp
+                      size={18}
+                      color={isSelected ? colors.primary : colors.textSecondary}
+                    />
+                    <Text
+                      style={[
+                        typography.bodyMedium,
+                        {
+                          color: isSelected ? colors.primary : colors.text,
+                          fontWeight: isSelected ? '700' : '400',
+                          marginLeft: spacing.md,
+                        },
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </View>
+                  {isSelected && <Check size={18} color={colors.primary} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };
@@ -611,5 +896,80 @@ const styles = StyleSheet.create({
   },
   cancelPasteBtn: {
     padding: spacing.xs,
+  },
+  breadcrumbBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  breadcrumbFlex: {
+    flex: 1,
+    overflow: 'hidden',
+  },
+  breadcrumbActionsGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingRight: spacing.sm,
+  },
+  breadcrumbIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'flex-end',
+  },
+  optionsSheetBox: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderWidth: 1,
+    padding: spacing.lg,
+    paddingBottom: spacing.xxl,
+  },
+  optionsSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+    paddingBottom: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  menuOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.md,
+  },
+  menuOptionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  menuIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sortOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 13,
+    paddingHorizontal: spacing.sm,
+    borderRadius: borderRadius.md,
+    marginVertical: 1,
+  },
+  sortOptionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
 });

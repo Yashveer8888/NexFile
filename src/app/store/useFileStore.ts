@@ -29,7 +29,7 @@ interface FileState {
 
   // Actions
   initialize: () => Promise<void>;
-  loadDirectory: (path: string) => Promise<void>;
+  loadDirectory: (path: string, forceRefresh?: boolean) => Promise<void>;
   enterDirectory: (dir: FileItem) => Promise<void>;
   navigateUp: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -102,10 +102,23 @@ export const useFileStore = create<FileState>((set, get) => ({
     }
   },
 
-  loadDirectory: async (path: string) => {
+  loadDirectory: async (path: string, forceRefresh: boolean = false) => {
+    // 1. Instant cache check: if cached, switch path & files in 0ms without full screen loading!
+    const cached = fileService.getCachedDirectory(path, get().showHidden);
+    if (cached && !forceRefresh) {
+      const sorted = fileService.sortFiles(cached, get().sortBy, get().sortOrder);
+      set({
+        currentPath: path,
+        files: sorted,
+        isLoading: false,
+        selectedFileIds: new Set(),
+      });
+      return;
+    }
+
     set({ isLoading: true });
     try {
-      const rawFiles = await fileService.listDirectory(path, get().showHidden);
+      const rawFiles = await fileService.listDirectory(path, get().showHidden, forceRefresh);
       const sorted = fileService.sortFiles(rawFiles, get().sortBy, get().sortOrder);
       set({
         currentPath: path,
@@ -144,7 +157,7 @@ export const useFileStore = create<FileState>((set, get) => ({
 
   refresh: async () => {
     const { currentPath, activeCategory } = get();
-    await get().loadDirectory(currentPath);
+    await get().loadDirectory(currentPath, true);
     const recents = await fileService.getRecentFiles(500);
     const catFiles = await fileService.getFilesByCategory(activeCategory);
     set({ recentFiles: recents, categoryFiles: catFiles });
@@ -270,12 +283,13 @@ export const useFileStore = create<FileState>((set, get) => ({
     const allFiles = [...files, ...recentFiles];
     set({ isLoading: true });
     try {
-      for (const id of selectedFileIds) {
+      const deletePromises = Array.from(selectedFileIds).map(async (id) => {
         const item = allFiles.find((f) => f.id === id);
         if (item) {
           await fileService.delete(item.path, !permanent);
         }
-      }
+      });
+      await Promise.all(deletePromises);
       set({ selectedFileIds: new Set() });
       await get().refresh();
     } catch (err) {

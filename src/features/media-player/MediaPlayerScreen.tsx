@@ -33,6 +33,7 @@ import { fileService } from '../../services/filesystem/fileService';
 import { NexVideo, NexVideoLoadEvent, NexVideoProgressEvent } from '../../components/video/NexVideo';
 import { FileItem } from '../../types/file';
 import { useVideoResumeStore } from '../../app/store/useVideoResumeStore';
+import { isAudioFile } from '../../utils/fileTypes';
 
 // Formatter for seconds -> MM:SS or HH:MM:SS
 const formatDuration = (seconds: number): string => {
@@ -59,6 +60,16 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
 
   const [playlist] = useState<FileItem[]>(initialPlaylist);
   const [currentFile, setCurrentFile] = useState<FileItem | null>(initialFile || null);
+
+  // Safety check: If an audio file was passed to MediaPlayerScreen, delegate to AudioPlayerScreen
+  useEffect(() => {
+    if (initialFile && isAudioFile(initialFile)) {
+      navigation.replace('AudioPlayerScreen', {
+        file: initialFile,
+        playlist: initialPlaylist,
+      });
+    }
+  }, [initialFile]);
 
   // Resume playback position
   const initialResumePos = useMemo(() => {

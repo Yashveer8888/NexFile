@@ -315,11 +315,17 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         images: images.length > 0 ? images : [item],
         initialIndex: Math.max(0, idx),
       });
-    } else if (isVideoFile(item) || isAudioFile(item)) {
-      const mediaList = filteredFiles.filter((f) => isVideoFile(f) || isAudioFile(f));
+    } else if (isAudioFile(item)) {
+      const audioList = filteredFiles.filter((f) => isAudioFile(f));
+      navigation.navigate('AudioPlayerScreen', {
+        file: item,
+        playlist: audioList.length > 0 ? audioList : [item],
+      });
+    } else if (isVideoFile(item)) {
+      const videoList = filteredFiles.filter((f) => isVideoFile(f));
       navigation.navigate('MediaPlayerScreen', {
         file: item,
-        playlist: mediaList,
+        playlist: videoList.length > 0 ? videoList : [item],
       });
     } else {
       fileService.openFile(item.path, item.mimeType);

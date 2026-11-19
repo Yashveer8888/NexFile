@@ -24,14 +24,12 @@ interface FileIconProps {
   iconSize?: number;
 }
 
-export const FileIcon: React.FC<FileIconProps> = ({
+export const FileIcon = React.memo<FileIconProps>(({
   item,
   size = 44,
   iconSize = 22,
 }) => {
   const { colors } = useThemeStore();
-  const [thumbUri, setThumbUri] = useState<string | null>(item.thumbnailUri || null);
-  const [loadError, setLoadError] = useState(false);
 
   const ext = (item.extension || '').toLowerCase();
   const isVideo = ['mp4', 'mkv', 'mov', 'webm', 'avi', '3gp'].includes(ext);
@@ -39,22 +37,32 @@ export const FileIcon: React.FC<FileIconProps> = ({
   const isApk = ext === 'apk';
   const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp'].includes(ext);
 
+  const initialThumb = item.thumbnailUri
+    ? item.thumbnailUri
+    : isImage && !item.isDirectory
+    ? (item.path.startsWith('file://') ? item.path : `file://${item.path}`)
+    : (thumbnailService.getCachedThumbnail(item.path) || null);
+
+  const [thumbUri, setThumbUri] = useState<string | null>(initialThumb);
+  const [loadError, setLoadError] = useState(false);
+
   useEffect(() => {
-    setLoadError(false);
+    if (item.isDirectory) return;
     if (isImage) {
-      setThumbUri(item.path.startsWith('file://') ? item.path : `file://${item.path}`);
+      const uri = item.path.startsWith('file://') ? item.path : `file://${item.path}`;
+      if (thumbUri !== uri) setThumbUri(uri);
       return;
     }
     if (item.thumbnailUri) {
-      setThumbUri(item.thumbnailUri);
+      if (thumbUri !== item.thumbnailUri) setThumbUri(item.thumbnailUri);
       return;
     }
-    if (isVideo || isPdf || isApk) {
+    if ((isVideo || isPdf || isApk) && !thumbUri) {
       thumbnailService.getThumbnail(item.path, ext).then((uri) => {
         if (uri) setThumbUri(uri);
       });
     }
-  }, [item.path, item.extension, item.thumbnailUri, isImage, isVideo, isPdf, isApk, ext]);
+  }, [item.isDirectory, item.path, item.thumbnailUri, isImage, isVideo, isPdf, isApk, ext, thumbUri]);
 
   if (item.isDirectory) {
     return (
@@ -176,7 +184,7 @@ export const FileIcon: React.FC<FileIconProps> = ({
       <IconComponent size={iconSize} color={iconColor} />
     </View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: {

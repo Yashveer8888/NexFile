@@ -22,6 +22,7 @@ export type RootStackParamList = {
   ArchiveManagerScreen: { archivePath?: string } | undefined;
   PrivateVaultScreen: undefined;
   MediaPlayerScreen: { file: FileItem; playlist?: FileItem[] };
+  AudioPlayerScreen: { file: FileItem; playlist?: FileItem[] };
   AppManagerScreen: undefined;
   FileSharingScreen: { selectedFiles?: FileItem[] } | undefined;
   AiAssistantScreen: undefined;

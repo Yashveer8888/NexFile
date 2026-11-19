@@ -5,6 +5,11 @@ const { NexFileManager } = NativeModules;
 class ThumbnailService {
   private cache: Map<string, string> = new Map();
 
+  getCachedThumbnail(filePath: string): string | null {
+    if (!filePath) return null;
+    return this.cache.get(filePath) || null;
+  }
+
   async getThumbnail(filePath: string, extension: string): Promise<string | null> {
     if (!filePath) return null;
     const ext = extension.toLowerCase().replace(/^\./, '');

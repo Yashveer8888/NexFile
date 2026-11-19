@@ -15,13 +15,14 @@ import { spacing } from '../../theme/spacing';
 interface BreadcrumbProps {
   items: BreadcrumbItem[];
   onNavigate: (path: string) => void;
+  style?: any;
 }
 
-export const Breadcrumb: React.FC<BreadcrumbProps> = ({ items, onNavigate }) => {
+export const Breadcrumb: React.FC<BreadcrumbProps> = ({ items, onNavigate, style }) => {
   const { colors } = useThemeStore();
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
+    <View style={[styles.container, { backgroundColor: colors.surface, borderBottomColor: colors.border }, style]}>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}

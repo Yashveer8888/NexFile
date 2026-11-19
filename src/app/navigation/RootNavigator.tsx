@@ -13,6 +13,7 @@ import { DocumentConverterScreen } from '../../features/document-converter/Docum
 import { ArchiveManagerScreen } from '../../features/archive/ArchiveManagerScreen';
 import { PrivateVaultScreen } from '../../features/vault/PrivateVaultScreen';
 import { MediaPlayerScreen } from '../../features/media-player/MediaPlayerScreen';
+import { AudioPlayerScreen } from '../../features/audio-player/AudioPlayerScreen';
 import { AppManagerScreen } from '../../features/app-manager/AppManagerScreen';
 import { FileSharingScreen } from '../../features/file-sharing/FileSharingScreen';
 import { AiAssistantScreen } from '../../features/ai-assistant/AiAssistantScreen';
@@ -57,6 +58,7 @@ export const RootNavigator: React.FC = () => {
         <Stack.Screen name="ArchiveManagerScreen" component={ArchiveManagerScreen} />
         <Stack.Screen name="PrivateVaultScreen" component={PrivateVaultScreen} />
         <Stack.Screen name="MediaPlayerScreen" component={MediaPlayerScreen as any} />
+        <Stack.Screen name="AudioPlayerScreen" component={AudioPlayerScreen as any} />
         <Stack.Screen name="AppManagerScreen" component={AppManagerScreen} />
         <Stack.Screen name="FileSharingScreen" component={FileSharingScreen as any} />
         <Stack.Screen name="AiAssistantScreen" component={AiAssistantScreen} />

@@ -5,7 +5,7 @@ export interface VaultItem {
   encryptedPath: string;
   vaultFilePath?: string;
   thumbnailUri?: string;
-  category: 'images' | 'videos' | 'documents' | 'other';
+  category: 'images' | 'videos' | 'audio' | 'documents' | 'other';
   size: number;
   encryptedAt: number;
   mimeType: string;

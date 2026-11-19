@@ -288,11 +288,17 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         images: imageList.length > 0 ? imageList : [item],
         initialIndex: Math.max(0, idx),
       });
-    } else if (isVideoFile(item) || isAudioFile(item)) {
-      const mediaList = displayedFiles.filter((f) => isVideoFile(f) || isAudioFile(f));
+    } else if (isAudioFile(item)) {
+      const audioList = displayedFiles.filter((f) => isAudioFile(f));
+      navigation.navigate('AudioPlayerScreen', {
+        file: item,
+        playlist: audioList.length > 0 ? audioList : [item],
+      });
+    } else if (isVideoFile(item)) {
+      const videoList = displayedFiles.filter((f) => isVideoFile(f));
       navigation.navigate('MediaPlayerScreen', {
         file: item,
-        playlist: mediaList.length > 0 ? mediaList : [item],
+        playlist: videoList.length > 0 ? videoList : [item],
       });
     } else {
       fileService.openFile(item.path, item.mimeType);
@@ -415,17 +421,6 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         showSearch
         onSearchPress={() => navigation.navigate('SearchScreen')}
         showThemeToggle
-        showFilter
-        onFilterPress={() => setFilterModalVisible(true)}
-        rightActions={
-          <TouchableOpacity
-            style={styles.headerActionBtn}
-            onPress={() => setCreateItemVisible(true)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Plus size={22} color={colors.text} />
-          </TouchableOpacity>
-        }
       />
 
       {/* Paste Clipboard Banner */}

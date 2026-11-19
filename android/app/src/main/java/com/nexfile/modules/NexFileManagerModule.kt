@@ -47,6 +47,35 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
     override fun getName(): String = "NexFileManager"
 
+    private val ioExecutor = java.util.concurrent.Executors.newFixedThreadPool(4)
+    private val thumbnailExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
+
+    private fun getFastMimeType(ext: String): String {
+        return when (ext) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            "mp4" -> "video/mp4"
+            "mkv" -> "video/x-matroska"
+            "mp3" -> "audio/mpeg"
+            "pdf" -> "application/pdf"
+            "txt", "log" -> "text/plain"
+            "apk" -> "application/vnd.android.package-archive"
+            "zip" -> "application/zip"
+            "rar" -> "application/x-rar-compressed"
+            "7z" -> "application/x-7z-compressed"
+            "doc", "docx" -> "application/msword"
+            "xls", "xlsx" -> "application/vnd.ms-excel"
+            "ppt", "pptx" -> "application/vnd.ms-powerpoint"
+            "" -> "*/*"
+            else -> {
+                val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+                mime ?: "*/*"
+            }
+        }
+    }
+
     private data class FileInfoEntry(
         val file: File,
         val name: String,
@@ -690,164 +719,177 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun getThumbnail(filePath: String, promise: Promise) {
-        try {
-            val file = File(filePath)
-            if (!file.exists() || file.isDirectory) {
-                promise.resolve(null)
-                return
-            }
-
-            val ext = getFileExtension(file.name)
-            val thumbDir = File(reactContext.cacheDir, "thumbnails")
-            if (!thumbDir.exists()) thumbDir.mkdirs()
-
-            val thumbFile = File(thumbDir, "thumb_${file.name.hashCode()}_${file.lastModified() / 1000}.jpg")
-            if (thumbFile.exists()) {
-                promise.resolve("file://${thumbFile.absolutePath}")
-                return
-            }
-
-            // 1. Image: direct file URI
-            if (arrayOf("jpg", "jpeg", "png", "webp", "gif", "heic", "bmp").contains(ext)) {
-                promise.resolve("file://${file.absolutePath}")
-                return
-            }
-
-            // 2. Video: frame from middle of video
-            if (arrayOf("mp4", "mkv", "mov", "webm", "avi", "3gp", "flv").contains(ext)) {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(file.absolutePath)
-                    val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                    val durationMs = durationStr?.toLongOrNull() ?: 2000L
-                    val targetUs = (durationMs / 2) * 1000L
-
-                    val bitmap = retriever.getFrameAtTime(targetUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                        ?: retriever.getFrameAtTime(1000000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-
-                    if (bitmap != null) {
-                        FileOutputStream(thumbFile).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
-                        }
-                        bitmap.recycle()
-                        promise.resolve("file://${thumbFile.absolutePath}")
-                        return
-                    }
-                } catch (ignored: Exception) {
-                } finally {
-                    try { retriever.release() } catch (ignored: Exception) {}
+        thumbnailExecutor.execute {
+            try {
+                val file = File(filePath)
+                if (!file.exists() || file.isDirectory) {
+                    promise.resolve(null)
+                    return@execute
                 }
-            }
 
-            // 3. PDF: first page render
-            if (ext == "pdf") {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    var pfd: ParcelFileDescriptor? = null
-                    var renderer: PdfRenderer? = null
+                val ext = getFileExtension(file.name)
+
+                // 1. Image: direct file URI instantly, 0 disk I/O
+                if (arrayOf("jpg", "jpeg", "png", "webp", "gif", "heic", "bmp").contains(ext)) {
+                    promise.resolve("file://${file.absolutePath}")
+                    return@execute
+                }
+
+                val thumbDir = File(reactContext.cacheDir, "thumbnails")
+                if (!thumbDir.exists()) thumbDir.mkdirs()
+
+                val thumbFile = File(thumbDir, "thumb_${file.name.hashCode()}_${file.lastModified() / 1000}.jpg")
+                if (thumbFile.exists()) {
+                    promise.resolve("file://${thumbFile.absolutePath}")
+                    return@execute
+                }
+
+                // 2. Video: fast thumbnail (120x120, 70% quality)
+                if (arrayOf("mp4", "mkv", "mov", "webm", "avi", "3gp", "flv").contains(ext)) {
+                    val retriever = MediaMetadataRetriever()
                     try {
-                        pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-                        renderer = PdfRenderer(pfd)
-                        if (renderer.pageCount > 0) {
-                            val page = renderer.openPage(0)
-                            val width = 240
-                            val height = Math.max(1, (240 * page.height) / page.width)
-                            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            page.close()
+                        retriever.setDataSource(file.absolutePath)
+                        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        val durationMs = durationStr?.toLongOrNull() ?: 2000L
+                        val targetUs = (durationMs / 2) * 1000L
 
+                        val bitmap = retriever.getFrameAtTime(targetUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            ?: retriever.getFrameAtTime(1000000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+
+                        if (bitmap != null) {
+                            val scaled = Bitmap.createScaledBitmap(bitmap, 120, 120, false)
                             FileOutputStream(thumbFile).use { out ->
-                                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                                scaled.compress(Bitmap.CompressFormat.JPEG, 70, out)
                             }
+                            if (scaled != bitmap) scaled.recycle()
                             bitmap.recycle()
                             promise.resolve("file://${thumbFile.absolutePath}")
-                            return
+                            return@execute
                         }
                     } catch (ignored: Exception) {
                     } finally {
-                        try { renderer?.close() } catch (ignored: Exception) {}
-                        try { pfd?.close() } catch (ignored: Exception) {}
+                        try { retriever.release() } catch (ignored: Exception) {}
                     }
                 }
-            }
 
-            // 4. APK: App icon
-            if (ext == "apk") {
-                try {
-                    val pm = reactContext.packageManager
-                    val pkgInfo = pm.getPackageArchiveInfo(file.absolutePath, 0)
-                    if (pkgInfo != null && pkgInfo.applicationInfo != null) {
-                        val appInfo = pkgInfo.applicationInfo!!
-                        appInfo.sourceDir = file.absolutePath
-                        appInfo.publicSourceDir = file.absolutePath
-                        val drawable = pm.getApplicationIcon(appInfo)
+                // 3. PDF: first page render
+                if (ext == "pdf") {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        var pfd: ParcelFileDescriptor? = null
+                        var renderer: PdfRenderer? = null
+                        try {
+                            pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                            renderer = PdfRenderer(pfd)
+                            if (renderer.pageCount > 0) {
+                                val page = renderer.openPage(0)
+                                val width = 120
+                                val height = Math.max(1, (120 * page.height) / page.width)
+                                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                page.close()
 
-                        val bitmap = if (drawable is BitmapDrawable) {
-                            drawable.bitmap
-                        } else {
-                            val bmp = Bitmap.createBitmap(
-                                Math.max(1, drawable.intrinsicWidth),
-                                Math.max(1, drawable.intrinsicHeight),
-                                Bitmap.Config.ARGB_8888
-                            )
-                            val canvas = Canvas(bmp)
-                            drawable.setBounds(0, 0, canvas.width, canvas.height)
-                            drawable.draw(canvas)
-                            bmp
+                                FileOutputStream(thumbFile).use { out ->
+                                    bitmap.compress(Bitmap.CompressFormat.JPEG, 70, out)
+                                }
+                                bitmap.recycle()
+                                promise.resolve("file://${thumbFile.absolutePath}")
+                                return@execute
+                            }
+                        } catch (ignored: Exception) {
+                        } finally {
+                            try { renderer?.close() } catch (ignored: Exception) {}
+                            try { pfd?.close() } catch (ignored: Exception) {}
                         }
-
-                        val apkThumb = File(thumbDir, "apk_${file.name.hashCode()}.png")
-                        FileOutputStream(apkThumb).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 90, out)
-                        }
-                        promise.resolve("file://${apkThumb.absolutePath}")
-                        return
                     }
-                } catch (ignored: Exception) {
                 }
-            }
 
-            promise.resolve(null)
-        } catch (e: Exception) {
-            promise.resolve(null)
+                // 4. APK: App icon
+                if (ext == "apk") {
+                    try {
+                        val pm = reactContext.packageManager
+                        val pkgInfo = pm.getPackageArchiveInfo(file.absolutePath, 0)
+                        if (pkgInfo != null && pkgInfo.applicationInfo != null) {
+                            val appInfo = pkgInfo.applicationInfo!!
+                            appInfo.sourceDir = file.absolutePath
+                            appInfo.publicSourceDir = file.absolutePath
+                            val drawable = pm.getApplicationIcon(appInfo)
+
+                            val bitmap = if (drawable is BitmapDrawable) {
+                                drawable.bitmap
+                            } else {
+                                val bmp = Bitmap.createBitmap(
+                                    Math.max(1, drawable.intrinsicWidth),
+                                    Math.max(1, drawable.intrinsicHeight),
+                                    Bitmap.Config.ARGB_8888
+                                )
+                                val canvas = Canvas(bmp)
+                                drawable.setBounds(0, 0, canvas.width, canvas.height)
+                                drawable.draw(canvas)
+                                bmp
+                            }
+
+                            val apkThumb = File(thumbDir, "apk_${file.name.hashCode()}.png")
+                            FileOutputStream(apkThumb).use { out ->
+                                bitmap.compress(Bitmap.CompressFormat.PNG, 80, out)
+                            }
+                            promise.resolve("file://${apkThumb.absolutePath}")
+                            return@execute
+                        }
+                    } catch (ignored: Exception) {
+                    }
+                }
+
+                promise.resolve(null)
+            } catch (e: Exception) {
+                promise.resolve(null)
+            }
         }
     }
 
     @ReactMethod
     fun listFiles(dirPath: String, showHidden: Boolean, promise: Promise) {
-        try {
-            val targetDir = File(dirPath)
-            if (!targetDir.exists() || !targetDir.isDirectory) {
-                promise.reject("DIR_NOT_FOUND", "Directory does not exist or is not a directory: $dirPath")
-                return
-            }
-
-            val files = targetDir.listFiles() ?: arrayOf()
-            val array = Arguments.createArray()
-
-            for (file in files) {
-                if (!showHidden && file.isHidden) continue
-
-                val map = Arguments.createMap().apply {
-                    putString("name", file.name)
-                    putString("path", file.absolutePath)
-                    putBoolean("isDirectory", file.isDirectory)
-                    putBoolean("isHidden", file.isHidden)
-                    putDouble("size", if (file.isDirectory) 0.0 else file.length().toDouble())
-                    putDouble("lastModified", file.lastModified().toDouble())
-                    putString("extension", if (file.isDirectory) "" else getFileExtension(file.name))
-                    putString("mimeType", getMimeType(file))
-                    putBoolean("canRead", file.canRead())
-                    putBoolean("canWrite", file.canWrite())
-                    if (file.isDirectory) {
-                        putInt("itemCount", file.listFiles()?.size ?: 0)
-                    }
+        ioExecutor.execute {
+            try {
+                val targetDir = File(dirPath)
+                if (!targetDir.exists() || !targetDir.isDirectory) {
+                    promise.reject("DIR_NOT_FOUND", "Directory does not exist or is not a directory: $dirPath")
+                    return@execute
                 }
-                array.pushMap(map)
-            }
 
-            promise.resolve(array)
-        } catch (e: Exception) {
-            promise.reject("LIST_FILES_ERROR", e.message, e)
+                val files = targetDir.listFiles()
+                val array = Arguments.createArray()
+                if (files == null) {
+                    promise.resolve(array)
+                    return@execute
+                }
+
+                for (file in files) {
+                    val name = file.name
+                    val isHiddenFile = name.startsWith(".")
+                    if (!showHidden && isHiddenFile) continue
+
+                    val isDir = file.isDirectory
+                    val ext = if (isDir) "" else getFileExtension(name)
+                    val map = Arguments.createMap().apply {
+                        putString("name", name)
+                        putString("path", file.absolutePath)
+                        putBoolean("isDirectory", isDir)
+                        putBoolean("isHidden", isHiddenFile)
+                        putDouble("size", if (isDir) 0.0 else file.length().toDouble())
+                        putDouble("lastModified", file.lastModified().toDouble())
+                        putString("extension", ext)
+                        putString("mimeType", if (isDir) "inode/directory" else getFastMimeType(ext))
+                        putBoolean("canRead", true)
+                        putBoolean("canWrite", true)
+                        putInt("itemCount", -1)
+                    }
+                    array.pushMap(map)
+                }
+
+                promise.resolve(array)
+            } catch (e: Exception) {
+                promise.reject("LIST_FILES_ERROR", e.message, e)
+            }
         }
     }
 
