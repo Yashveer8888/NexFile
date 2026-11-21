@@ -9,6 +9,7 @@ import {
 } from '../../types/file';
 import { fileService } from '../../services/filesystem/fileService';
 import { archiveService } from '../../services/archive/archiveService';
+import { getMimeTypeFromExtension } from '../../utils/fileTypes';
 
 interface FileState {
   currentPath: string;
@@ -103,7 +104,6 @@ export const useFileStore = create<FileState>((set, get) => ({
   },
 
   loadDirectory: async (path: string, forceRefresh: boolean = false) => {
-    // 1. Instant cache check: if cached, switch path & files in 0ms without full screen loading!
     const cached = fileService.getCachedDirectory(path, get().showHidden);
     if (cached && !forceRefresh) {
       const sorted = fileService.sortFiles(cached, get().sortBy, get().sortOrder);
@@ -113,18 +113,17 @@ export const useFileStore = create<FileState>((set, get) => ({
         isLoading: false,
         selectedFileIds: new Set(),
       });
+      fileService.preloadSubdirectories(cached, get().showHidden);
       return;
     }
 
-    set({ isLoading: true });
+    set({ currentPath: path, selectedFileIds: new Set(), isLoading: true });
     try {
       const rawFiles = await fileService.listDirectory(path, get().showHidden, forceRefresh);
       const sorted = fileService.sortFiles(rawFiles, get().sortBy, get().sortOrder);
       set({
-        currentPath: path,
         files: sorted,
         isLoading: false,
-        selectedFileIds: new Set(),
       });
     } catch (err) {
       console.warn(`Error loading directory ${path}:`, err);
@@ -136,31 +135,83 @@ export const useFileStore = create<FileState>((set, get) => ({
     if (!dir.isDirectory) return;
     const current = get().currentPath;
     const nextHistory = [...get().history, current];
+    const cached = fileService.getCachedDirectory(dir.path, get().showHidden);
+    if (cached) {
+      // 0.00ms immediate synchronous switch!
+      const sorted = fileService.sortFiles(cached, get().sortBy, get().sortOrder);
+      set({
+        history: nextHistory,
+        currentPath: dir.path,
+        files: sorted,
+        isLoading: false,
+        selectedFileIds: new Set(),
+      });
+      fileService.preloadSubdirectories(cached, get().showHidden);
+      return;
+    }
+
     set({ history: nextHistory });
     await get().loadDirectory(dir.path);
   },
 
   navigateUp: async () => {
     const { history, currentPath } = get();
+    let previousPath = '';
+    let newHistory = history;
     if (history.length > 0) {
-      const previousPath = history[history.length - 1];
-      const newHistory = history.slice(0, -1);
-      set({ history: newHistory });
-      await get().loadDirectory(previousPath);
+      previousPath = history[history.length - 1];
+      newHistory = history.slice(0, -1);
     } else {
       const parent = currentPath.substring(0, currentPath.lastIndexOf('/'));
       if (parent && parent.length >= '/storage'.length) {
-        await get().loadDirectory(parent);
+        previousPath = parent;
       }
     }
+    if (!previousPath) return;
+
+    const cached = fileService.getCachedDirectory(previousPath, get().showHidden);
+    if (cached) {
+      // 0.00ms immediate synchronous back switch!
+      const sorted = fileService.sortFiles(cached, get().sortBy, get().sortOrder);
+      set({
+        history: newHistory,
+        currentPath: previousPath,
+        files: sorted,
+        isLoading: false,
+        selectedFileIds: new Set(),
+      });
+      fileService.preloadSubdirectories(cached, get().showHidden);
+      return;
+    }
+
+    set({ history: newHistory });
+    await get().loadDirectory(previousPath);
   },
 
   refresh: async () => {
-    const { currentPath, activeCategory } = get();
+    const { currentPath, activeCategory, recentFiles, categoryFiles } = get();
     await get().loadDirectory(currentPath, true);
-    const recents = await fileService.getRecentFiles(500);
-    const catFiles = await fileService.getFilesByCategory(activeCategory);
-    set({ recentFiles: recents, categoryFiles: catFiles });
+    const recents = await fileService.getRecentFiles(500, true);
+    const catFiles = await fileService.getFilesByCategory(activeCategory, true);
+
+    const isRecentsSame =
+      recentFiles.length === recents.length &&
+      (recentFiles.length === 0 ||
+        (recentFiles[0]?.id === recents[0]?.id &&
+          recentFiles[0]?.lastModified === recents[0]?.lastModified));
+
+    const isCatSame =
+      categoryFiles.length === catFiles.length &&
+      (categoryFiles.length === 0 ||
+        (categoryFiles[0]?.id === catFiles[0]?.id &&
+          categoryFiles[0]?.lastModified === catFiles[0]?.lastModified));
+
+    if (!isRecentsSame || !isCatSame) {
+      set({
+        recentFiles: isRecentsSame ? recentFiles : recents,
+        categoryFiles: isCatSame ? categoryFiles : catFiles,
+      });
+    }
   },
 
   setActiveCategory: async (category: FileCategory) => {
@@ -255,22 +306,90 @@ export const useFileStore = create<FileState>((set, get) => ({
   },
 
   createFolder: async (name: string, parentPath?: string) => {
-    const targetDir = parentPath || get().currentPath;
-    const newPath = await fileService.createFolder(targetDir, name);
-    await get().refresh();
+    const targetDir = (parentPath || get().currentPath).replace(/\/$/, '');
+    const newPath = `${targetDir}/${name}`;
+    const newFolder: FileItem = {
+      id: newPath,
+      name,
+      path: newPath,
+      isDirectory: true,
+      size: 0,
+      lastModified: Date.now(),
+      extension: '',
+      mimeType: 'directory',
+    };
+
+    if (targetDir === get().currentPath.replace(/\/$/, '')) {
+      const updated = fileService.sortFiles([newFolder, ...get().files], get().sortBy, get().sortOrder);
+      set({ files: updated });
+      fileService.setCachedDirectory(targetDir, get().showHidden, updated);
+    }
+    fileService.createFolder(targetDir, name).catch((err) => {
+      console.warn('Error creating folder:', err);
+    });
     return newPath;
   },
 
   createFile: async (name: string, content: string = '', parentPath?: string) => {
-    const targetDir = parentPath || get().currentPath;
-    const newPath = await fileService.createFile(targetDir, name, content);
-    await get().refresh();
+    const targetDir = (parentPath || get().currentPath).replace(/\/$/, '');
+    const newPath = `${targetDir}/${name}`;
+    const ext = name.includes('.') ? '.' + name.split('.').pop() : '';
+    const newFile: FileItem = {
+      id: newPath,
+      name,
+      path: newPath,
+      isDirectory: false,
+      size: (content || '').length,
+      lastModified: Date.now(),
+      extension: ext,
+      mimeType: getMimeTypeFromExtension(name),
+    };
+
+    if (targetDir === get().currentPath.replace(/\/$/, '')) {
+      const updated = fileService.sortFiles([newFile, ...get().files], get().sortBy, get().sortOrder);
+      set({ files: updated, recentFiles: [newFile, ...get().recentFiles] });
+      fileService.setCachedDirectory(targetDir, get().showHidden, updated);
+    }
+    fileService.createFile(targetDir, name, content).catch((err) => {
+      console.warn('Error creating file:', err);
+    });
     return newPath;
   },
 
   renameItem: async (path: string, newName: string) => {
-    const newPath = await fileService.rename(path, newName);
-    await get().refresh();
+    const parentDir = path.substring(0, path.lastIndexOf('/'));
+    const newPath = `${parentDir}/${newName}`;
+    const newExt = newName.includes('.') ? '.' + newName.split('.').pop() : '';
+
+    const updateItem = (f: FileItem): FileItem => {
+      if (f.path === path || f.id === path) {
+        return {
+          ...f,
+          name: newName,
+          path: newPath,
+          id: newPath,
+          extension: newExt,
+          mimeType: f.isDirectory ? 'directory' : getMimeTypeFromExtension(newName),
+        };
+      }
+      return f;
+    };
+
+    const nextFiles = fileService.sortFiles(get().files.map(updateItem), get().sortBy, get().sortOrder);
+    const nextCategory = fileService.sortFiles(get().categoryFiles.map(updateItem), get().sortBy, get().sortOrder);
+    const nextRecent = get().recentFiles.map(updateItem);
+
+    set({
+      files: nextFiles,
+      categoryFiles: nextCategory,
+      recentFiles: nextRecent,
+    });
+
+    fileService.setCachedDirectory(get().currentPath, get().showHidden, nextFiles);
+    fileService.updateCachedItem(path, updateItem);
+    fileService.rename(path, newName).catch((err) => {
+      console.warn('Error renaming item:', err);
+    });
     return newPath;
   },
 
@@ -279,34 +398,57 @@ export const useFileStore = create<FileState>((set, get) => ({
   },
 
   deleteSelectedWithChoice: async (permanent: boolean) => {
-    const { selectedFileIds, files, recentFiles } = get();
-    const allFiles = [...files, ...recentFiles];
-    set({ isLoading: true });
-    try {
-      const deletePromises = Array.from(selectedFileIds).map(async (id) => {
-        const item = allFiles.find((f) => f.id === id);
-        if (item) {
-          await fileService.delete(item.path, !permanent);
-        }
-      });
-      await Promise.all(deletePromises);
-      set({ selectedFileIds: new Set() });
-      await get().refresh();
-    } catch (err) {
+    const { selectedFileIds, files, recentFiles, categoryFiles, currentPath, showHidden } = get();
+    if (selectedFileIds.size === 0) return;
+
+    const ids = new Set(selectedFileIds);
+    const allFiles = [...files, ...recentFiles, ...categoryFiles];
+    const pathsToDelete = Array.from(ids)
+      .map((id) => allFiles.find((f) => f.id === id || f.path === id)?.path)
+      .filter((p): p is string => Boolean(p));
+
+    const nextFiles = files.filter((f) => !ids.has(f.id) && !ids.has(f.path));
+    const nextRecent = recentFiles.filter((f) => !ids.has(f.id) && !ids.has(f.path));
+    const nextCategory = categoryFiles.filter((f) => !ids.has(f.id) && !ids.has(f.path));
+
+    set({
+      files: nextFiles,
+      recentFiles: nextRecent,
+      categoryFiles: nextCategory,
+      selectedFileIds: new Set(),
+      isLoading: false,
+    });
+
+    fileService.setCachedDirectory(currentPath, showHidden, nextFiles);
+    pathsToDelete.forEach((p) => fileService.removeCachedItem(p));
+    Promise.all(pathsToDelete.map((p) => fileService.delete(p, !permanent))).catch((err) => {
       console.warn('Error deleting selected items:', err);
-    } finally {
-      set({ isLoading: false });
-    }
+    });
   },
 
   deleteSingle: async (path: string) => {
-    await fileService.delete(path, true);
-    await get().refresh();
+    await get().deleteSingleWithChoice(path, true);
   },
 
   deleteSingleWithChoice: async (path: string, permanent: boolean) => {
-    await fileService.delete(path, !permanent);
-    await get().refresh();
+    const nextFiles = get().files.filter((f) => f.path !== path && f.id !== path);
+    const nextRecent = get().recentFiles.filter((f) => f.path !== path && f.id !== path);
+    const nextCategory = get().categoryFiles.filter((f) => f.path !== path && f.id !== path);
+    const nextSelected = new Set(get().selectedFileIds);
+    nextSelected.delete(path);
+
+    set({
+      files: nextFiles,
+      recentFiles: nextRecent,
+      categoryFiles: nextCategory,
+      selectedFileIds: nextSelected,
+    });
+
+    fileService.setCachedDirectory(get().currentPath, get().showHidden, nextFiles);
+    fileService.removeCachedItem(path);
+    fileService.delete(path, !permanent).catch((err) => {
+      console.warn('Error deleting single item:', err);
+    });
   },
 
   compressSelected: async (zipName: string, destDirPath?: string) => {

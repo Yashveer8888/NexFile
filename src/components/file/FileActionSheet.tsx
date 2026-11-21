@@ -27,7 +27,8 @@ interface FileActionSheetProps {
   selectedCount: number;
   totalCount: number;
   onCopy: () => void;
-  onMove: () => void;
+  onMove?: () => void;
+  hideMove?: boolean;
   onDelete: () => void;
   onShare: () => void;
   onRename?: () => void;
@@ -44,6 +45,7 @@ export const FileActionSheet: React.FC<FileActionSheetProps> = ({
   totalCount,
   onCopy,
   onMove,
+  hideMove = false,
   onDelete,
   onShare,
   onRename,
@@ -137,14 +139,16 @@ export const FileActionSheet: React.FC<FileActionSheetProps> = ({
         </TouchableOpacity>
 
         {/* Move */}
-        <TouchableOpacity style={styles.actionItem} onPress={onMove} activeOpacity={0.7}>
-          <View style={[styles.actionIconCircle, { backgroundColor: colors.surfaceVariant }]}>
-            <Move size={18} color={colors.text} />
-          </View>
-          <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>
-            Move
-          </Text>
-        </TouchableOpacity>
+        {!hideMove && Boolean(onMove) && (
+          <TouchableOpacity style={styles.actionItem} onPress={onMove} activeOpacity={0.7}>
+            <View style={[styles.actionIconCircle, { backgroundColor: colors.surfaceVariant }]}>
+              <Move size={18} color={colors.text} />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>
+              Move
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {/* Compress (Zip) */}
         {onCompress && (

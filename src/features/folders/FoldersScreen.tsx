@@ -101,6 +101,7 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
   const [folderMenuVisible, setFolderMenuVisible] = useState(false);
   const [sortModalVisible, setSortModalVisible] = useState(false);
   const [createItemVisible, setCreateItemVisible] = useState(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
 
   const SORT_OPTIONS = [
     { id: 'name_asc', field: 'name' as const, order: 'asc' as const, label: 'Name (A to Z)', icon: ArrowDownAZ },
@@ -306,6 +307,9 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
 
   // Lock single file into private vault
   const handleLockInVault = async (item: FileItemType) => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFileToVault } = useVaultStore.getState();
     if (!isPinSet) {
       setPendingVaultItem(item);
@@ -313,10 +317,14 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
       setSetPinModalVisible(true);
       return;
     }
+    useFileStore.setState((state) => ({
+      files: state.files.filter((f) => f.id !== item.id && f.path !== item.path),
+      recentFiles: state.recentFiles.filter((f) => f.id !== item.id && f.path !== item.path),
+    }));
+    fileService.clearDirectoryCache();
     try {
       await importFileToVault(item.path, '0000');
       Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
-      refresh();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock file in vault');
     }
@@ -324,6 +332,9 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
 
   // Lock batch files into private vault
   const handleBatchLockInVault = async () => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFilesToVault } = useVaultStore.getState();
     const selected = files.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
     if (selected.length === 0) {
@@ -335,11 +346,17 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
       setSetPinModalVisible(true);
       return;
     }
+    const selectedIds = new Set(selected.map((f) => f.id));
+    useFileStore.setState((state) => ({
+      files: state.files.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+      recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+      selectedFileIds: new Set(),
+    }));
+    clearSelection();
+    fileService.clearDirectoryCache();
     try {
       await importFilesToVault(selected.map((item) => item.path), '0000');
-      clearSelection();
-      Alert.alert('Vault Secured', `${selected.length} item(s) locked in your Private Folder.`);
-      refresh();
+      Alert.alert('Vault Secured', `${selected.length} item(s) locked in your Private Vault.`);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock items in vault');
     }
@@ -351,18 +368,37 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
     if (pendingBatchVault) {
       setPendingBatchVault(false);
       const selected = files.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
-      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
+      const selectedIds = new Set(selected.map((f) => f.id));
+      useFileStore.setState((state) => ({
+        files: state.files.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+        recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+        selectedFileIds: new Set(),
+      }));
       clearSelection();
+      fileService.clearDirectoryCache();
+      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
       Alert.alert('Passcode Set & Secured', `${selected.length} item(s) locked in Private Folder.`);
-      refresh();
     } else if (pendingVaultItem) {
       const it = pendingVaultItem;
       setPendingVaultItem(null);
+      useFileStore.setState((state) => ({
+        files: state.files.filter((f) => f.id !== it.id && f.path !== it.path),
+        recentFiles: state.recentFiles.filter((f) => f.id !== it.id && f.path !== it.path),
+      }));
+      fileService.clearDirectoryCache();
       await useVaultStore.getState().importFileToVault(it.path, pin);
       Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
-      refresh();
     }
   };
+
+  const handlePullRefresh = useCallback(async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  }, [refresh]);
 
   // Share batch files
   const handleBatchShare = () => {
@@ -474,7 +510,7 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
         updateCellsBatchingPeriod={30}
         removeClippedSubviews={true}
         refreshControl={
-          <RefreshControl refreshing={isLoading} onRefresh={refresh} colors={[colors.primary]} />
+          <RefreshControl refreshing={isPullRefreshing} onRefresh={handlePullRefresh} colors={[colors.primary]} />
         }
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={
@@ -594,13 +630,8 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
         visible={confirmBatchDelete}
         itemCount={selectedFileIds.size}
         onDelete={async (permanent) => {
-          const selected = files.filter((f) => selectedFileIds.has(f.id));
-          for (const item of selected) {
-            await fileService.delete(item.path, !permanent);
-          }
           setConfirmBatchDelete(false);
-          clearSelection();
-          refresh();
+          await deleteSelectedWithChoice(permanent);
         }}
         onCancel={() => setConfirmBatchDelete(false)}
       />

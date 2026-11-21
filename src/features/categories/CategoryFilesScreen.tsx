@@ -44,7 +44,7 @@ import { typography } from '../../theme/typography';
 import { spacing, borderRadius, elevation } from '../../theme/spacing';
 import { FileItem as FileItemType, FileCategory, SortField, SortOrder } from '../../types/file';
 import { fileService } from '../../services/filesystem/fileService';
-import { isImageFile, isAudioFile, isVideoFile } from '../../utils/fileTypes';
+import { isImageFile, isAudioFile, isVideoFile, getMimeTypeFromExtension } from '../../utils/fileTypes';
 import { Header } from '../../components/common/Header';
 import { FileItem } from '../../components/file/FileItem';
 import { FileGridItem } from '../../components/file/FileGridItem';
@@ -83,8 +83,8 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
     toggleFavorite,
   } = useFileStore();
 
-  const [rawFiles, setRawFiles] = useState<FileItemType[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [rawFiles, setRawFiles] = useState<FileItemType[]>(() => fileService.getCachedCategory(category) || []);
+  const [isLoading, setIsLoading] = useState(() => !fileService.hasCachedCategory(category));
   const [selectedSubTab, setSelectedSubTab] = useState('All');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [sortBy, setSortBy] = useState<SortField>('date');
@@ -109,11 +109,21 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
   const [pendingVaultItem, setPendingVaultItem] = useState<FileItemType | null>(null);
   const [pendingBatchVault, setPendingBatchVault] = useState(false);
 
-  const loadCategoryFiles = useCallback(async () => {
-    setIsLoading(true);
+  const loadCategoryFiles = useCallback(async (force: boolean = false) => {
+    const hasCache = fileService.hasCachedCategory(category);
+    if (!hasCache || force) {
+      setIsLoading(true);
+    }
     try {
-      const items = await fileService.getFilesByCategory(category);
-      setRawFiles(items);
+      const items = await fileService.getFilesByCategory(category, force);
+      setRawFiles((prev) => {
+        if (!force && prev.length === items.length && prev.length > 0) {
+          if (prev[0]?.id === items[0]?.id && prev[0]?.lastModified === items[0]?.lastModified) {
+            return prev;
+          }
+        }
+        return items;
+      });
     } catch (e) {
       console.warn('Error loading category files:', e);
     } finally {
@@ -122,7 +132,7 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
   }, [category]);
 
   useEffect(() => {
-    loadCategoryFiles();
+    loadCategoryFiles(false);
   }, [loadCategoryFiles]);
 
   // Sub-filter tabs definition
@@ -198,14 +208,14 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
   const isSelectionMode = selectedFileIds.size > 0;
 
   // Toggle selection
-  const toggleSelect = (id: string) => {
+  const toggleSelect = useCallback((id: string) => {
     setSelectedFileIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
   const selectAll = () => {
     setSelectedFileIds(new Set(filteredFiles.map((f) => f.id)));
@@ -303,37 +313,94 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
     ])
   );
 
-  const handleFilePress = (item: FileItemType) => {
-    if (isSelectionMode) {
+  const handleFilePress = useCallback(
+    (item: FileItemType) => {
+      if (isSelectionMode) {
+        toggleSelect(item.id);
+        return;
+      }
+      if (isImageFile(item)) {
+        const images = filteredFiles.filter((f) => isImageFile(f));
+        const idx = images.findIndex((img) => img.id === item.id);
+        navigation.navigate('ImageViewerScreen', {
+          images: images.length > 0 ? images : [item],
+          initialIndex: Math.max(0, idx),
+        });
+      } else if (isAudioFile(item)) {
+        const audioList = filteredFiles.filter((f) => isAudioFile(f));
+        navigation.navigate('AudioPlayerScreen', {
+          file: item,
+          playlist: audioList.length > 0 ? audioList : [item],
+        });
+      } else if (isVideoFile(item)) {
+        const videoList = filteredFiles.filter((f) => isVideoFile(f));
+        navigation.navigate('MediaPlayerScreen', {
+          file: item,
+          playlist: videoList.length > 0 ? videoList : [item],
+        });
+      } else {
+        fileService.openFile(item.path, item.mimeType);
+      }
+    },
+    [isSelectionMode, toggleSelect, filteredFiles, navigation]
+  );
+
+  const handleFileLongPress = useCallback(
+    (item: FileItemType) => {
       toggleSelect(item.id);
-      return;
-    }
-    if (isImageFile(item)) {
-      const images = filteredFiles.filter((f) => isImageFile(f));
-      const idx = images.findIndex((img) => img.id === item.id);
-      navigation.navigate('ImageViewerScreen', {
-        images: images.length > 0 ? images : [item],
-        initialIndex: Math.max(0, idx),
-      });
-    } else if (isAudioFile(item)) {
-      const audioList = filteredFiles.filter((f) => isAudioFile(f));
-      navigation.navigate('AudioPlayerScreen', {
-        file: item,
-        playlist: audioList.length > 0 ? audioList : [item],
-      });
-    } else if (isVideoFile(item)) {
-      const videoList = filteredFiles.filter((f) => isVideoFile(f));
-      navigation.navigate('MediaPlayerScreen', {
-        file: item,
-        playlist: videoList.length > 0 ? videoList : [item],
-      });
-    } else {
-      fileService.openFile(item.path, item.mimeType);
-    }
-  };
+    },
+    [toggleSelect]
+  );
+
+  const handleMorePress = useCallback((item: FileItemType) => {
+    setActionModalItem(item);
+  }, []);
+
+  const keyExtractor = useCallback((item: FileItemType) => item.path || item.id, []);
+
+  const getItemLayout = useCallback(
+    (_: any, index: number) => ({
+      length: 64,
+      offset: 64 * index,
+      index,
+    }),
+    []
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: FileItemType }) => {
+      const isSelected = selectedFileIds.has(item.id);
+      if (viewMode === 'grid') {
+        return (
+          <FileGridItem
+            item={item}
+            onPress={handleFilePress}
+            onLongPress={handleFileLongPress}
+            onMorePress={handleMorePress}
+            isSelected={isSelected}
+            isSelectionMode={isSelectionMode}
+          />
+        );
+      }
+      return (
+        <FileItem
+          item={item}
+          onPress={handleFilePress}
+          onLongPress={handleFileLongPress}
+          onMorePress={handleMorePress}
+          isSelected={isSelected}
+          isSelectionMode={isSelectionMode}
+        />
+      );
+    },
+    [viewMode, selectedFileIds, isSelectionMode, handleFilePress, handleFileLongPress, handleMorePress]
+  );
 
   // Lock single file into private vault
   const handleLockInVault = async (item: FileItemType) => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFileToVault } = useVaultStore.getState();
     if (!isPinSet) {
       setPendingVaultItem(item);
@@ -341,10 +408,12 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       setSetPinModalVisible(true);
       return;
     }
+    // Optimistic instant removal in 0ms
+    setRawFiles((prev) => prev.filter((f) => f.id !== item.id && f.path !== item.path));
+    fileService.clearDirectoryCache();
     try {
       await importFileToVault(item.path, '0000');
       Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
-      loadCategoryFiles();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock file in vault');
     }
@@ -352,6 +421,9 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
 
   // Lock batch files into private vault
   const handleBatchLockInVault = async () => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFilesToVault } = useVaultStore.getState();
     const selected = filteredFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
     if (selected.length === 0) {
@@ -363,11 +435,14 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       setSetPinModalVisible(true);
       return;
     }
+    // Optimistic instant removal in 0ms
+    const selectedIds = new Set(selected.map((f) => f.id));
+    setRawFiles((prev) => prev.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)));
+    clearSelection();
+    fileService.clearDirectoryCache();
     try {
       await importFilesToVault(selected.map((item) => item.path), '0000');
-      clearSelection();
       Alert.alert('Vault Secured', `${selected.length} item(s) locked in Private Folder.`);
-      loadCategoryFiles();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock items in vault');
     }
@@ -379,16 +454,19 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
     if (pendingBatchVault) {
       setPendingBatchVault(false);
       const selected = filteredFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
-      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
+      const selectedIds = new Set(selected.map((f) => f.id));
+      setRawFiles((prev) => prev.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)));
       clearSelection();
+      fileService.clearDirectoryCache();
+      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
       Alert.alert('Passcode Set & Secured', `${selected.length} item(s) locked in Private Folder.`);
-      loadCategoryFiles();
     } else if (pendingVaultItem) {
       const it = pendingVaultItem;
       setPendingVaultItem(null);
+      setRawFiles((prev) => prev.filter((f) => f.id !== it.id && f.path !== it.path));
+      fileService.clearDirectoryCache();
       await useVaultStore.getState().importFileToVault(it.path, pin);
       Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
-      loadCategoryFiles();
     }
   };
 
@@ -421,19 +499,6 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         subtitle={categoryMeta.subtitle}
         showBack
         onBack={() => navigation.goBack()}
-        showSearch
-        onSearchPress={() => navigation.navigate('SearchScreen', { category })}
-        showFilter
-        onFilterPress={() => setFilterModalVisible(true)}
-        rightActions={
-          <TouchableOpacity
-            style={styles.headerActionBtn}
-            onPress={() => setCreateItemVisible(true)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Plus size={22} color={colors.text} />
-          </TouchableOpacity>
-        }
       />
 
       {/* Sub-Tabs / Filter Chips Bar */}
@@ -514,36 +579,19 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         data={filteredFiles}
         key={viewMode}
         numColumns={viewMode === 'grid' ? 3 : 1}
-        keyExtractor={(item) => item.id}
+        keyExtractor={keyExtractor}
+        getItemLayout={viewMode === 'list' ? getItemLayout : undefined}
+        renderItem={renderItem}
+        extraData={selectedFileIds}
+        initialNumToRender={18}
+        maxToRenderPerBatch={18}
+        windowSize={5}
+        updateCellsBatchingPeriod={20}
+        removeClippedSubviews={true}
         refreshControl={
-          <RefreshControl refreshing={isLoading} onRefresh={loadCategoryFiles} colors={[colors.primary]} />
+          <RefreshControl refreshing={isLoading} onRefresh={() => loadCategoryFiles(true)} colors={[colors.primary]} />
         }
         contentContainerStyle={styles.listContent}
-        renderItem={({ item }) => {
-          const isSelected = selectedFileIds.has(item.id);
-          if (viewMode === 'grid') {
-            return (
-              <FileGridItem
-                item={item}
-                onPress={handleFilePress}
-                onLongPress={() => toggleSelect(item.id)}
-                onMorePress={(it) => setActionModalItem(it)}
-                isSelected={isSelected}
-                isSelectionMode={isSelectionMode}
-              />
-            );
-          }
-          return (
-            <FileItem
-              item={item}
-              onPress={handleFilePress}
-              onLongPress={() => toggleSelect(item.id)}
-              onMorePress={(it) => setActionModalItem(it)}
-              isSelected={isSelected}
-              isSelectionMode={isSelectionMode}
-            />
-          );
-        }}
         ListEmptyComponent={
           !isLoading ? (
             <EmptyState
@@ -561,6 +609,7 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         <FileActionSheet
           selectedCount={selectedFileIds.size}
           totalCount={filteredFiles.length}
+          hideMove={category === 'images' || category === 'videos'}
           onCopy={() => {
             const selected = filteredFiles.filter((f) => selectedFileIds.has(f.id));
             setClipboard('copy', selected);
@@ -602,6 +651,7 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       <ItemActionModal
         visible={Boolean(actionModalItem)}
         item={actionModalItem}
+        hideMove={category === 'images' || category === 'videos'}
         onClose={() => setActionModalItem(null)}
         onOpenWith={(item) => fileService.openWith(item.path)}
         onShare={(item) => fileService.shareFiles([item.path])}
@@ -620,15 +670,24 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         }}
         onToggleFavorite={(item) => {
           toggleFavorite(item.path);
-          loadCategoryFiles();
+          setRawFiles((prev) =>
+            prev.map((f) => (f.id === item.id || f.path === item.path ? { ...f, isFavorite: !f.isFavorite } : f))
+          );
         }}
         onToggleHide={async (item) => {
           if (item.name.startsWith('.')) {
             await unhideItem(item.path);
+            const newName = item.name.replace(/^\.+/, '');
+            setRawFiles((prev) =>
+              prev.map((f) => (f.id === item.id ? { ...f, name: newName } : f))
+            );
           } else {
             await hideItem(item.path);
+            const newName = `.${item.name}`;
+            setRawFiles((prev) =>
+              prev.map((f) => (f.id === item.id ? { ...f, name: newName } : f))
+            );
           }
-          loadCategoryFiles();
         }}
         onLockInVault={handleLockInVault}
         onDetails={(item) => setDetailsItem(item)}
@@ -640,14 +699,41 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       <CreateItemDialog
         visible={createItemVisible}
         onCreateFolder={async (name) => {
-          await createFolder(name, defaultFolder);
+          const targetDir = defaultFolder.replace(/\/$/, '');
+          const newPath = `${targetDir}/${name}`;
+          const newFolder: FileItemType = {
+            id: newPath,
+            name,
+            path: newPath,
+            isDirectory: true,
+            size: 0,
+            lastModified: Date.now(),
+            extension: '',
+            mimeType: 'directory',
+          };
+          setRawFiles((prev) => [newFolder, ...prev]);
           setCreateItemVisible(false);
-          loadCategoryFiles();
+          fileService.clearDirectoryCache();
+          fileService.createFolder(targetDir, name).catch(console.warn);
         }}
         onCreateFile={async (name, content) => {
-          await createFile(name, content, defaultFolder);
+          const targetDir = defaultFolder.replace(/\/$/, '');
+          const newPath = `${targetDir}/${name}`;
+          const ext = name.includes('.') ? '.' + name.split('.').pop() : '';
+          const newFile: FileItemType = {
+            id: newPath,
+            name,
+            path: newPath,
+            isDirectory: false,
+            size: (content || '').length,
+            lastModified: Date.now(),
+            extension: ext,
+            mimeType: getMimeTypeFromExtension(name),
+          };
+          setRawFiles((prev) => [newFile, ...prev]);
           setCreateItemVisible(false);
-          loadCategoryFiles();
+          fileService.clearDirectoryCache();
+          fileService.createFile(targetDir, name, content).catch(console.warn);
         }}
         onCancel={() => setCreateItemVisible(false)}
       />
@@ -659,9 +745,12 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         itemName={deleteTarget?.name}
         onDelete={async (permanent) => {
           if (deleteTarget) {
-            await deleteSingleWithChoice(deleteTarget.path, permanent);
+            const targetId = deleteTarget.id;
+            const targetPath = deleteTarget.path;
+            setRawFiles((prev) => prev.filter((f) => f.id !== targetId && f.path !== targetPath));
             setDeleteTarget(null);
-            loadCategoryFiles();
+            fileService.clearDirectoryCache();
+            fileService.delete(targetPath, !permanent).catch(console.warn);
           }
         }}
         onCancel={() => setDeleteTarget(null)}
@@ -673,12 +762,13 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         itemCount={selectedFileIds.size}
         onDelete={async (permanent) => {
           const selected = filteredFiles.filter((f) => selectedFileIds.has(f.id));
-          for (const item of selected) {
-            await fileService.delete(item.path, !permanent);
-          }
+          const selectedIds = new Set(selected.map((f) => f.id));
+          const selectedPaths = selected.map((f) => f.path);
+          setRawFiles((prev) => prev.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)));
           setConfirmBatchDelete(false);
           clearSelection();
-          loadCategoryFiles();
+          fileService.clearDirectoryCache();
+          Promise.all(selectedPaths.map((p) => fileService.delete(p, !permanent))).catch(console.warn);
         }}
         onCancel={() => setConfirmBatchDelete(false)}
       />
@@ -742,9 +832,21 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         initialName={renameItemTarget?.name || ''}
         onRename={async (newName) => {
           if (renameItemTarget) {
-            await renameItem(renameItemTarget.path, newName);
+            const oldPath = renameItemTarget.path;
+            const oldId = renameItemTarget.id;
+            const parentDir = oldPath.substring(0, oldPath.lastIndexOf('/'));
+            const newPath = `${parentDir}/${newName}`;
+            const newExt = newName.includes('.') ? '.' + newName.split('.').pop() : '';
+            setRawFiles((prev) =>
+              prev.map((f) =>
+                f.id === oldId || f.path === oldPath
+                  ? { ...f, name: newName, path: newPath, id: newPath, extension: newExt }
+                  : f
+              )
+            );
             setRenameItemTarget(null);
-            loadCategoryFiles();
+            fileService.clearDirectoryCache();
+            fileService.rename(oldPath, newName).catch(console.warn);
           }
         }}
         onCancel={() => setRenameItemTarget(null)}

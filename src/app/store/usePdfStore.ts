@@ -17,7 +17,7 @@ interface PdfState {
   setPageFilter: (id: string, filter: DocumentFilterType) => void;
   reorderPages: (fromIndex: number, toIndex: number) => void;
   clearScanner: () => void;
-  saveScannedPdf: (title: string, quality?: number) => Promise<string>;
+  saveScannedPdf: (title: string, quality?: number, targetDirectory?: string) => Promise<string>;
 
   // Viewer & Editor
   currentDoc: PdfDocumentInfo | null;
@@ -94,12 +94,13 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     set({ scannedPages: [], activePageIndex: 0 });
   },
 
-  saveScannedPdf: async (title: string, quality: number = 85) => {
+  saveScannedPdf: async (title: string, quality: number = 85, targetDirectory?: string) => {
     const { scannedPages } = get();
     if (scannedPages.length === 0) throw new Error('No pages to save');
 
     const cleanTitle = title.trim().replace(/[^a-zA-Z0-9_-]/g, '_') || 'Scanned_Doc';
-    const destPath = `/storage/emulated/0/Documents/Scanned_Documents/${cleanTitle}_${Date.now()}.pdf`;
+    const folder = targetDirectory || '/storage/emulated/0/google drive files';
+    const destPath = `${folder}/${cleanTitle}_${Date.now()}.pdf`;
     const imageUris = scannedPages.map((p) => p.uri);
 
     const resultPath = await pdfService.createPdfFromImages(imageUris, destPath, quality);

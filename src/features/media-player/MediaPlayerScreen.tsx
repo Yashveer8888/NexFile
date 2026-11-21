@@ -27,6 +27,8 @@ import {
   Check,
   ChevronLeft,
   Zap,
+  Lock,
+  Unlock,
 } from 'lucide-react-native';
 import { spacing } from '../../theme/spacing';
 import { fileService } from '../../services/filesystem/fileService';
@@ -144,9 +146,14 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
   const [selectedSubtitleLang, setSelectedSubtitleLang] = useState<string>('Off');
   const [currentSubtitleText] = useState<string>('');
 
-  // UI / Controls Visibility
+  // UI / Controls Visibility & Screen Lock
   const [showControls, setShowControls] = useState<boolean>(true);
-  const [hudType, setHudType] = useState<'volume' | 'brightness' | 'seek' | 'zoom' | null>(null);
+  const [isScreenLocked, setIsScreenLocked] = useState<boolean>(false);
+  const isScreenLockedRef = useRef<boolean>(false);
+  isScreenLockedRef.current = isScreenLocked;
+  const [showLockedButton, setShowLockedButton] = useState<boolean>(false);
+  const lockedBtnTimeoutRef = useRef<any>(null);
+  const [hudType, setHudType] = useState<'volume' | 'brightness' | 'seek' | 'zoom' | 'lock' | 'unlock' | null>(null);
   const [hudValue, setHudValue] = useState<number>(0);
   const [seekHudDiff, setSeekHudDiff] = useState<number>(0);
   const [doubleTapFeedback, setDoubleTapFeedback] = useState<'left' | 'right' | null>(null);
@@ -234,29 +241,42 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
     return () => sub.remove();
   }, []);
 
-  // Auto-hide controls after 4 seconds (only when playing)
+  // Auto-hide controls and all buttons after exactly 3 seconds
   const resetControlsTimer = useCallback(() => {
     if (hideControlsTimeoutRef.current) {
       clearTimeout(hideControlsTimeoutRef.current);
     }
     setShowControls(true);
-    if (isPlayingRef.current) {
-      hideControlsTimeoutRef.current = setTimeout(() => {
-        setShowControls(false);
-      }, 4000);
-    }
+    hideControlsTimeoutRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, 3000);
+  }, []);
+
+  const showLockedButtonTemporarily = useCallback(() => {
+    setShowLockedButton(true);
+    if (lockedBtnTimeoutRef.current) clearTimeout(lockedBtnTimeoutRef.current);
+    lockedBtnTimeoutRef.current = setTimeout(() => {
+      setShowLockedButton(false);
+    }, 3000);
   }, []);
 
   useEffect(() => {
     resetControlsTimer();
     return () => {
       if (hideControlsTimeoutRef.current) clearTimeout(hideControlsTimeoutRef.current);
+      if (lockedBtnTimeoutRef.current) clearTimeout(lockedBtnTimeoutRef.current);
     };
-  }, [resetControlsTimer, isPlaying]);
+  }, [resetControlsTimer]);
 
   // Hardware Back button handling
   useEffect(() => {
     const onBackPress = () => {
+      if (isScreenLockedRef.current) {
+        setHudType('lock');
+        if (hudTimeoutRef.current) clearTimeout(hudTimeoutRef.current);
+        hudTimeoutRef.current = setTimeout(() => setHudType(null), 1500);
+        return true;
+      }
       navigation.goBack();
       return true;
     };
@@ -595,6 +615,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: (_, gesture) => {
+          if (isScreenLockedRef.current) return false;
           return (
             Math.abs(gesture.dx) > 6 ||
             Math.abs(gesture.dy) > 6 ||
@@ -602,6 +623,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
           );
         },
         onPanResponderGrant: (evt) => {
+          if (isScreenLockedRef.current) return;
           const touches = evt.nativeEvent.touches;
           if (touches && touches.length === 2) {
             // Two-finger pinch to zoom start
@@ -621,6 +643,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
           }
         },
         onPanResponderMove: (evt, gesture) => {
+          if (isScreenLockedRef.current) return;
           const touches = evt.nativeEvent.touches;
 
           // 1. PINCH TO ZOOM (TWO FINGERS)
@@ -744,6 +767,13 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
           }
         },
         onPanResponderRelease: (evt, gesture) => {
+          if (isScreenLockedRef.current) {
+            showLockedButtonTemporarily();
+            setHudType('lock');
+            if (hudTimeoutRef.current) clearTimeout(hudTimeoutRef.current);
+            hudTimeoutRef.current = setTimeout(() => setHudType(null), 1200);
+            return;
+          }
           const currentMode = gestureModeRef.current;
 
           // 1. Zoom release
@@ -826,9 +856,21 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
                   setTimeout(() => setDoubleTapFeedback(null), 450);
                 }
               }
+              resetControlsTimer();
             } else {
-              // Single tap -> toggle controls
-              setShowControls((prev) => !prev);
+              // Single tap -> toggle controls with 3s auto-hide timer
+              setShowControls((prev) => {
+                if (prev) {
+                  if (hideControlsTimeoutRef.current) clearTimeout(hideControlsTimeoutRef.current);
+                  return false;
+                } else {
+                  if (hideControlsTimeoutRef.current) clearTimeout(hideControlsTimeoutRef.current);
+                  hideControlsTimeoutRef.current = setTimeout(() => {
+                    setShowControls(false);
+                  }, 3000);
+                  return true;
+                }
+              });
             }
             lastTapRef.current = now;
           }
@@ -935,7 +977,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
                 hudValue > 100 && { color: '#FF5252', fontWeight: '800' },
               ]}
             >
-              {hudValue > 100 ? `Boost ${hudValue}%` : `${hudValue}%`}
+              {hudValue > 100 ? `${hudValue}%` : `${hudValue}%`}
             </Text>
           </View>
         )}
@@ -980,10 +1022,43 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
         )}
       </View>
 
+      {/* Unified Screen Lock / Unlock Button on Left Edge (Single Fixed Position, No Text) */}
+      {((showControls && !isScreenLocked) || (isScreenLocked && showLockedButton)) && (
+        <TouchableOpacity
+          style={[
+            styles.singleLeftLockBtn,
+            isScreenLocked && styles.singleLeftLockBtnLocked,
+          ]}
+          onPress={() => {
+            if (isScreenLocked) {
+              setIsScreenLocked(false);
+              setShowLockedButton(false);
+              setHudType('unlock');
+              resetControlsTimer();
+            } else {
+              setIsScreenLocked(true);
+              setShowControls(false);
+              showLockedButtonTemporarily();
+              setHudType('lock');
+            }
+            if (hudTimeoutRef.current) clearTimeout(hudTimeoutRef.current);
+            hudTimeoutRef.current = setTimeout(() => setHudType(null), 1500);
+          }}
+          activeOpacity={0.7}
+          hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+        >
+          {isScreenLocked ? (
+            <Lock size={22} color="#FF5252" />
+          ) : (
+            <Unlock size={22} color="#FFFFFF" />
+          )}
+        </TouchableOpacity>
+      )}
+
       {/* =========================================================================
           2. TOP CONTROL BAR (BACK, TITLE, SPEED, ROTATION, AUDIO, SUBTITLES)
           ========================================================================= */}
-      {showControls && (
+      {showControls && !isScreenLocked && (
         <View style={[styles.topBar, { paddingTop: insets.top + spacing.xs }]}>
           <TouchableOpacity
             style={styles.iconCircleBtn}
@@ -1043,7 +1118,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
       {/* =========================================================================
           3. CENTER CONTROLS (PREVIOUS, PLAY/PAUSE, NEXT) - ULTRA RESPONSIVE
           ========================================================================= */}
-      {showControls && (
+      {showControls && !isScreenLocked && (
         <View style={styles.centerControlsOverlay} pointerEvents="box-none">
           {/* Previous Video Button */}
           <TouchableOpacity
@@ -1084,7 +1159,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
       {/* =========================================================================
           4. BOTTOM CONTROL BAR (TIMESTAMPS & DRAGGABLE TIMELINE PROGRESS BAR)
           ========================================================================= */}
-      {showControls && (
+      {showControls && !isScreenLocked && (
         <View style={[styles.bottomBar, { paddingBottom: insets.bottom + spacing.sm }]}>
           <View style={styles.timelineRow}>
             <Text style={styles.timeLabelText}>{formatDuration(currentTime)}</Text>
@@ -1487,6 +1562,58 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     marginTop: 2,
+  },
+
+  // Lock / Unlock Center HUD
+  lockHudBox: {
+    position: 'absolute',
+    top: '40%',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    paddingHorizontal: 26,
+    paddingVertical: 18,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  lockHudText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  lockHudSubText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 4,
+  },
+
+  // Unified Screen Lock / Unlock Button on Left Edge (No Text, Single Fixed Position)
+  singleLeftLockBtn: {
+    position: 'absolute',
+    left: 20,
+    top: '46%',
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(20, 20, 26, 0.75)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 999,
+  },
+  singleLeftLockBtnLocked: {
+    backgroundColor: 'rgba(40, 10, 15, 0.85)',
+    borderColor: '#FF5252',
+    shadowColor: '#FF5252',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 6,
+    elevation: 8,
   },
 
   // Top Bar (100% Transparent)

@@ -8,6 +8,28 @@ class PdfService {
     return Platform.OS === 'android' && Boolean(NexPdf);
   }
 
+  async launchCameraScan(): Promise<string | null> {
+    if (this.isNativeAvailable() && NexPdf.launchCameraScan) {
+      try {
+        return await NexPdf.launchCameraScan();
+      } catch (e) {
+        console.warn('Native launchCameraScan failed:', e);
+      }
+    }
+    return null;
+  }
+
+  async pickImageScan(): Promise<string | null> {
+    if (this.isNativeAvailable() && NexPdf.pickImageScan) {
+      try {
+        return await NexPdf.pickImageScan();
+      } catch (e) {
+        console.warn('Native pickImageScan failed:', e);
+      }
+    }
+    return null;
+  }
+
   async getPdfPageCount(filePath: string): Promise<number> {
     if (this.isNativeAvailable()) {
       try {

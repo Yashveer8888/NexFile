@@ -39,7 +39,8 @@ interface ItemActionModalProps {
   onOpenWith: (item: FileItem) => void;
   onShare: (item: FileItem) => void;
   onCopy: (item: FileItem) => void;
-  onMove: (item: FileItem) => void;
+  onMove?: (item: FileItem) => void;
+  hideMove?: boolean;
   onRename: (item: FileItem) => void;
   onCompress: (item: FileItem) => void;
   onExtract?: (item: FileItem) => void;
@@ -59,6 +60,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
   onShare,
   onCopy,
   onMove,
+  hideMove = false,
   onRename,
   onCompress,
   onExtract,
@@ -183,23 +185,25 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
             </TouchableOpacity>
 
             {/* 4. Move / Cut */}
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={() => {
-                onClose();
-                onMove(item);
-              }}
-            >
-              <View style={[styles.actionIconPill, { backgroundColor: colors.surfaceVariant }]}>
-                <Move size={18} color={colors.text} />
-              </View>
-              <View style={styles.actionTextWrap}>
-                <Text style={[typography.labelMedium, { color: colors.text }]}>Cut / Move</Text>
-                <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
-                  Transfer without leaving a copy
-                </Text>
-              </View>
-            </TouchableOpacity>
+            {!hideMove && Boolean(onMove) && (
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  onClose();
+                  onMove?.(item);
+                }}
+              >
+                <View style={[styles.actionIconPill, { backgroundColor: colors.surfaceVariant }]}>
+                  <Move size={18} color={colors.text} />
+                </View>
+                <View style={styles.actionTextWrap}>
+                  <Text style={[typography.labelMedium, { color: colors.text }]}>Cut / Move</Text>
+                  <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                    Transfer without leaving a copy
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
 
             {/* 5. Rename */}
             <TouchableOpacity

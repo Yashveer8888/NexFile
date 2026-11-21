@@ -257,263 +257,267 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun getRecentFiles(limit: Int, promise: Promise) {
-        try {
-            val fileMap = LinkedHashMap<String, FileInfoEntry>()
-            val maxLimit = if (limit <= 0) 300 else limit
-
-            // 1. Filesystem scan of Internal Storage root and directories (finds all PDFs, TXT, HTML, DOCX, APKs)
-            val internalRoot = Environment.getExternalStorageDirectory()
-            if (internalRoot != null && internalRoot.exists() && internalRoot.canRead()) {
-                scanDirectory(
-                    dir = internalRoot,
-                    currentDepth = 0,
-                    maxDepth = 3,
-                    outMap = fileMap,
-                    maxEntries = 2500
-                )
-            }
-
-            // 2. Query MediaStore to supplement any additional media or files
+        ioExecutor.execute {
             try {
-                val uri = MediaStore.Files.getContentUri("external")
-                val projection = arrayOf(
-                    MediaStore.Files.FileColumns.DATA,
-                    MediaStore.Files.FileColumns.DISPLAY_NAME,
-                    MediaStore.Files.FileColumns.SIZE,
-                    MediaStore.Files.FileColumns.DATE_MODIFIED,
-                    MediaStore.Files.FileColumns.MIME_TYPE
-                )
-                val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
-                val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
+                val fileMap = LinkedHashMap<String, FileInfoEntry>()
+                val maxLimit = if (limit <= 0) 300 else limit
 
-                cursor?.use {
-                    val dataIndex = it.getColumnIndex(MediaStore.Files.FileColumns.DATA)
-                    val nameIndex = it.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
-                    val sizeIndex = it.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
-                    val dateIndex = it.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
-                    val mimeIndex = it.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE)
+                // 1. Filesystem scan of Internal Storage root and directories (finds all PDFs, TXT, HTML, DOCX, APKs)
+                val internalRoot = Environment.getExternalStorageDirectory()
+                if (internalRoot != null && internalRoot.exists() && internalRoot.canRead()) {
+                    scanDirectory(
+                        dir = internalRoot,
+                        currentDepth = 0,
+                        maxDepth = 3,
+                        outMap = fileMap,
+                        maxEntries = 2500
+                    )
+                }
 
-                    var count = 0
-                    while (it.moveToNext() && count < 1000) {
-                        val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
-                        if (filePath.isNullOrEmpty()) continue
+                // 2. Query MediaStore to supplement any additional media or files
+                try {
+                    val uri = MediaStore.Files.getContentUri("external")
+                    val projection = arrayOf(
+                        MediaStore.Files.FileColumns.DATA,
+                        MediaStore.Files.FileColumns.DISPLAY_NAME,
+                        MediaStore.Files.FileColumns.SIZE,
+                        MediaStore.Files.FileColumns.DATE_MODIFIED,
+                        MediaStore.Files.FileColumns.MIME_TYPE
+                    )
+                    val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+                    val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
 
-                        val file = File(filePath)
-                        if (!file.exists() || file.isDirectory || file.isHidden || file.name.startsWith(".")) continue
+                    cursor?.use {
+                        val dataIndex = it.getColumnIndex(MediaStore.Files.FileColumns.DATA)
+                        val nameIndex = it.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                        val sizeIndex = it.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
+                        val dateIndex = it.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
+                        val mimeIndex = it.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE)
 
-                        val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
-                        if (!fileMap.containsKey(canonical)) {
-                            val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
-                                it.getString(nameIndex)
-                            } else {
-                                file.name
-                            }
-                            val ext = getFileExtension(fileName)
-                            if (isJunkOrSystemFile(file, fileName, ext)) {
-                                continue
-                            }
+                        var count = 0
+                        while (it.moveToNext() && count < 1000) {
+                            val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
+                            if (filePath.isNullOrEmpty()) continue
 
-                            val size = if (sizeIndex != -1) it.getLong(sizeIndex) else file.length()
-                            val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else file.lastModified()
-                            val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
-                                it.getString(mimeIndex)
-                            } else {
-                                getMimeType(file)
-                            }
+                            val file = File(filePath)
+                            if (!file.exists() || file.isDirectory || file.isHidden || file.name.startsWith(".")) continue
 
-                            val parentFile = file.parentFile
-                            val parentFolder = if (parentFile != null) {
-                                if (parentFile.absolutePath == "/storage/emulated/0" || parentFile.name == "0") {
-                                    "Internal Storage"
+                            val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
+                            if (!fileMap.containsKey(canonical)) {
+                                val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
+                                    it.getString(nameIndex)
                                 } else {
-                                    parentFile.name
+                                    file.name
                                 }
-                            } else {
-                                ""
+                                val ext = getFileExtension(fileName)
+                                if (isJunkOrSystemFile(file, fileName, ext)) {
+                                    continue
+                                }
+
+                                val size = if (sizeIndex != -1) it.getLong(sizeIndex) else file.length()
+                                val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else file.lastModified()
+                                val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
+                                    it.getString(mimeIndex)
+                                } else {
+                                    getMimeType(file)
+                                }
+
+                                val parentFile = file.parentFile
+                                val parentFolder = if (parentFile != null) {
+                                    if (parentFile.absolutePath == "/storage/emulated/0" || parentFile.name == "0") {
+                                        "Internal Storage"
+                                    } else {
+                                        parentFile.name
+                                    }
+                                } else {
+                                    ""
+                                }
+
+                                fileMap[canonical] = FileInfoEntry(
+                                    file = file,
+                                    name = fileName,
+                                    size = size,
+                                    lastModified = lastModified,
+                                    mimeType = mimeType,
+                                    parentFolder = parentFolder,
+                                    extension = ext
+                                )
                             }
-
-                            fileMap[canonical] = FileInfoEntry(
-                                file = file,
-                                name = fileName,
-                                size = size,
-                                lastModified = lastModified,
-                                mimeType = mimeType,
-                                parentFolder = parentFolder,
-                                extension = ext
-                            )
+                            count++
                         }
-                        count++
                     }
-                }
-            } catch (ignored: Exception) {
-            }
-
-            // 3. Sort descending by last modified and take top items
-            val sortedList = fileMap.values.sortedByDescending { it.lastModified }
-            val topFiles = sortedList.take(maxLimit)
-
-            val fileList = Arguments.createArray()
-            for (item in topFiles) {
-                val ext = item.extension
-                var thumbUri: String? = null
-                if (arrayOf("jpg", "jpeg", "png", "webp", "gif", "heic", "bmp").contains(ext)) {
-                    thumbUri = "file://${item.file.absolutePath}"
+                } catch (ignored: Exception) {
                 }
 
-                val map = Arguments.createMap().apply {
-                    putString("id", item.file.absolutePath)
-                    putString("name", item.name)
-                    putString("path", item.file.absolutePath)
-                    putBoolean("isDirectory", false)
-                    putDouble("size", item.size.toDouble())
-                    putDouble("lastModified", item.lastModified.toDouble())
-                    putString("extension", ext)
-                    putString("mimeType", item.mimeType)
-                    putBoolean("isHidden", false)
-                    putString("parentFolder", item.parentFolder)
-                    if (thumbUri != null) {
-                        putString("thumbnailUri", thumbUri)
+                // 3. Sort descending by last modified and take top items
+                val sortedList = fileMap.values.sortedByDescending { it.lastModified }
+                val topFiles = sortedList.take(maxLimit)
+
+                val fileList = Arguments.createArray()
+                for (item in topFiles) {
+                    val ext = item.extension
+                    var thumbUri: String? = null
+                    if (arrayOf("jpg", "jpeg", "png", "webp", "gif", "heic", "bmp").contains(ext)) {
+                        thumbUri = "file://${item.file.absolutePath}"
                     }
-                }
-                fileList.pushMap(map)
-            }
 
-            promise.resolve(fileList)
-        } catch (e: Exception) {
-            promise.reject("RECENT_FILES_ERROR", e.message, e)
+                    val map = Arguments.createMap().apply {
+                        putString("id", item.file.absolutePath)
+                        putString("name", item.name)
+                        putString("path", item.file.absolutePath)
+                        putBoolean("isDirectory", false)
+                        putDouble("size", item.size.toDouble())
+                        putDouble("lastModified", item.lastModified.toDouble())
+                        putString("extension", ext)
+                        putString("mimeType", item.mimeType)
+                        putBoolean("isHidden", false)
+                        putString("parentFolder", item.parentFolder)
+                        if (thumbUri != null) {
+                            putString("thumbnailUri", thumbUri)
+                        }
+                    }
+                    fileList.pushMap(map)
+                }
+
+                promise.resolve(fileList)
+            } catch (e: Exception) {
+                promise.reject("RECENT_FILES_ERROR", e.message, e)
+            }
         }
     }
 
     @ReactMethod
     fun getAllImages(promise: Promise) {
-        try {
-            val imageMap = LinkedHashMap<String, FileInfoEntry>()
-
-            // 1. Query MediaStore Images (Fast query across all photo buckets)
+        ioExecutor.execute {
             try {
-                val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                val projection = arrayOf(
-                    MediaStore.Images.Media.DATA,
-                    MediaStore.Images.Media.DISPLAY_NAME,
-                    MediaStore.Images.Media.SIZE,
-                    MediaStore.Images.Media.DATE_MODIFIED,
-                    MediaStore.Images.Media.MIME_TYPE,
-                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME
-                )
-                val sortOrder = "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
-                val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
+                val imageMap = LinkedHashMap<String, FileInfoEntry>()
 
-                cursor?.use {
-                    val dataIndex = it.getColumnIndex(MediaStore.Images.Media.DATA)
-                    val nameIndex = it.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
-                    val sizeIndex = it.getColumnIndex(MediaStore.Images.Media.SIZE)
-                    val dateIndex = it.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED)
-                    val mimeIndex = it.getColumnIndex(MediaStore.Images.Media.MIME_TYPE)
-                    val bucketIndex = it.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+                // 1. Query MediaStore Images (Fast query across all photo buckets)
+                try {
+                    val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    val projection = arrayOf(
+                        MediaStore.Images.Media.DATA,
+                        MediaStore.Images.Media.DISPLAY_NAME,
+                        MediaStore.Images.Media.SIZE,
+                        MediaStore.Images.Media.DATE_MODIFIED,
+                        MediaStore.Images.Media.MIME_TYPE,
+                        MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+                    )
+                    val sortOrder = "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
+                    val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
 
-                    while (it.moveToNext()) {
-                        val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
-                        if (filePath.isNullOrEmpty()) continue
+                    cursor?.use {
+                        val dataIndex = it.getColumnIndex(MediaStore.Images.Media.DATA)
+                        val nameIndex = it.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+                        val sizeIndex = it.getColumnIndex(MediaStore.Images.Media.SIZE)
+                        val dateIndex = it.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED)
+                        val mimeIndex = it.getColumnIndex(MediaStore.Images.Media.MIME_TYPE)
+                        val bucketIndex = it.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
 
-                        val file = File(filePath)
-                        if (!file.exists() || file.isDirectory || file.isHidden) continue
+                        while (it.moveToNext()) {
+                            val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
+                            if (filePath.isNullOrEmpty()) continue
 
-                        val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
-                        if (!imageMap.containsKey(canonical)) {
-                            val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
-                                it.getString(nameIndex)
-                            } else {
-                                file.name
+                            val file = File(filePath)
+                            if (!file.exists() || file.isDirectory || file.isHidden) continue
+
+                            val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
+                            if (!imageMap.containsKey(canonical)) {
+                                val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
+                                    it.getString(nameIndex)
+                                } else {
+                                    file.name
+                                }
+                                val size = if (sizeIndex != -1) it.getLong(sizeIndex) else file.length()
+                                val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else file.lastModified()
+                                val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
+                                    it.getString(mimeIndex)
+                                } else {
+                                    getMimeType(file)
+                                }
+
+                                val bucketName = if (bucketIndex != -1 && !it.getString(bucketIndex).isNullOrEmpty()) {
+                                    it.getString(bucketIndex)
+                                } else {
+                                    file.parentFile?.name ?: "Pictures"
+                                }
+
+                                val ext = getFileExtension(fileName)
+                                imageMap[canonical] = FileInfoEntry(
+                                    file = file,
+                                    name = fileName,
+                                    size = size,
+                                    lastModified = lastModified,
+                                    mimeType = mimeType,
+                                    parentFolder = bucketName,
+                                    extension = ext
+                                )
                             }
-                            val size = if (sizeIndex != -1) it.getLong(sizeIndex) else file.length()
-                            val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else file.lastModified()
-                            val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
-                                it.getString(mimeIndex)
-                            } else {
-                                getMimeType(file)
-                            }
-
-                            val bucketName = if (bucketIndex != -1 && !it.getString(bucketIndex).isNullOrEmpty()) {
-                                it.getString(bucketIndex)
-                            } else {
-                                file.parentFile?.name ?: "Pictures"
-                            }
-
-                            val ext = getFileExtension(fileName)
-                            imageMap[canonical] = FileInfoEntry(
-                                file = file,
-                                name = fileName,
-                                size = size,
-                                lastModified = lastModified,
-                                mimeType = mimeType,
-                                parentFolder = bucketName,
-                                extension = ext
-                            )
                         }
                     }
+                } catch (e: Exception) {
                 }
-            } catch (e: Exception) {
-            }
 
-            // 2. Direct directory scan of primary image folders to catch any unindexed pictures
-            val imgDirs = arrayOf(
-                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera"),
-                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Screenshots"),
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                File(Environment.getExternalStorageDirectory(), "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images")
-            )
-            val imgExts = arrayOf("jpg", "jpeg", "png", "webp", "gif", "heic", "bmp")
+                // 2. Direct directory scan of primary image folders to catch any unindexed pictures
+                val imgDirs = arrayOf(
+                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera"),
+                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Screenshots"),
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    File(Environment.getExternalStorageDirectory(), "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images")
+                )
+                val imgExts = arrayOf("jpg", "jpeg", "png", "webp", "gif", "heic", "bmp")
 
-            for (dir in imgDirs) {
-                if (dir.exists() && dir.isDirectory) {
-                    val files = dir.listFiles() ?: continue
-                    for (f in files) {
-                        if (f.isFile && !f.isHidden && !f.name.startsWith(".")) {
-                            val ext = getFileExtension(f.name)
-                            if (imgExts.contains(ext)) {
-                                val canonical = try { f.canonicalPath } catch (e: Exception) { f.absolutePath }
-                                if (!imageMap.containsKey(canonical)) {
-                                    imageMap[canonical] = FileInfoEntry(
-                                        file = f,
-                                        name = f.name,
-                                        size = f.length(),
-                                        lastModified = f.lastModified(),
-                                        mimeType = getMimeType(f),
-                                        parentFolder = dir.name,
-                                        extension = ext
-                                    )
+                for (dir in imgDirs) {
+                    if (dir.exists() && dir.isDirectory) {
+                        val files = dir.listFiles() ?: continue
+                        for (f in files) {
+                            if (f.isFile && !f.isHidden && !f.name.startsWith(".")) {
+                                val ext = getFileExtension(f.name)
+                                if (imgExts.contains(ext)) {
+                                    val canonical = try { f.canonicalPath } catch (e: Exception) { f.absolutePath }
+                                    if (!imageMap.containsKey(canonical)) {
+                                        imageMap[canonical] = FileInfoEntry(
+                                            file = f,
+                                            name = f.name,
+                                            size = f.length(),
+                                            lastModified = f.lastModified(),
+                                            mimeType = getMimeType(f),
+                                            parentFolder = dir.name,
+                                            extension = ext
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // 3. Sort by last modified descending
-            val sortedList = imageMap.values.sortedByDescending { it.lastModified }
-            val array = Arguments.createArray()
+                // 3. Sort by last modified descending
+                val sortedList = imageMap.values.sortedByDescending { it.lastModified }
+                val array = Arguments.createArray()
 
-            for (item in sortedList) {
-                val map = Arguments.createMap().apply {
-                    putString("id", item.file.absolutePath)
-                    putString("name", item.name)
-                    putString("path", item.file.absolutePath)
-                    putBoolean("isDirectory", false)
-                    putDouble("size", item.size.toDouble())
-                    putDouble("lastModified", item.lastModified.toDouble())
-                    putString("extension", item.extension)
-                    putString("mimeType", item.mimeType)
-                    putBoolean("isHidden", false)
-                    putString("parentFolder", item.parentFolder)
-                    putString("thumbnailUri", "file://${item.file.absolutePath}")
+                for (item in sortedList) {
+                    val map = Arguments.createMap().apply {
+                        putString("id", item.file.absolutePath)
+                        putString("name", item.name)
+                        putString("path", item.file.absolutePath)
+                        putBoolean("isDirectory", false)
+                        putDouble("size", item.size.toDouble())
+                        putDouble("lastModified", item.lastModified.toDouble())
+                        putString("extension", item.extension)
+                        putString("mimeType", item.mimeType)
+                        putBoolean("isHidden", false)
+                        putString("parentFolder", item.parentFolder)
+                        putString("thumbnailUri", "file://${item.file.absolutePath}")
+                    }
+                    array.pushMap(map)
                 }
-                array.pushMap(map)
-            }
 
-            promise.resolve(array)
-        } catch (e: Exception) {
-            promise.reject("GET_IMAGES_ERROR", e.message, e)
+                promise.resolve(array)
+            } catch (e: Exception) {
+                promise.reject("GET_IMAGES_ERROR", e.message, e)
+            }
         }
     }
 
@@ -581,139 +585,141 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun getAllVideos(promise: Promise) {
-        try {
-            val videoMap = LinkedHashMap<String, FileInfoEntry>()
-            val vidExts = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "flv", "ts", "m4v", "wmv", "mpg", "mpeg")
-
-            // 1. Direct targeted deep scan of major video storage locations:
-            val storageRoot = Environment.getExternalStorageDirectory()
-            if (storageRoot != null && storageRoot.exists()) {
-                // DCIM (Snapchat, Camera, Screenrecorder, etc.)
-                val dcim = File(storageRoot, "DCIM")
-                if (dcim.exists()) scanVideosInDirectory(dcim, 0, 5, vidExts, videoMap)
-
-                // Download (including movie subfolders like Ramayana...mkv)
-                val download = File(storageRoot, "Download")
-                if (download.exists()) scanVideosInDirectory(download, 0, 5, vidExts, videoMap)
-
-                // Movies
-                val movies = File(storageRoot, "Movies")
-                if (movies.exists()) scanVideosInDirectory(movies, 0, 5, vidExts, videoMap)
-
-                // Pictures
-                val pictures = File(storageRoot, "Pictures")
-                if (pictures.exists()) scanVideosInDirectory(pictures, 0, 5, vidExts, videoMap)
-
-                // WhatsApp Media
-                val waMedia = File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video")
-                if (waMedia.exists()) scanVideosInDirectory(waMedia, 0, 5, vidExts, videoMap)
-
-                // Telegram Media
-                val tgMedia = File(storageRoot, "Android/media/org.telegram.messenger")
-                if (tgMedia.exists()) scanVideosInDirectory(tgMedia, 0, 6, vidExts, videoMap)
-
-                // Android/media in general
-                val androidMedia = File(storageRoot, "Android/media")
-                if (androidMedia.exists()) scanVideosInDirectory(androidMedia, 0, 7, vidExts, videoMap)
-
-                // Whole internal storage
-                scanVideosInDirectory(storageRoot, 0, 4, vidExts, videoMap)
-            }
-
-            // 2. Query MediaStore Videos to supplement any indexed items
+        ioExecutor.execute {
             try {
-                val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                val projection = arrayOf(
-                    MediaStore.Video.Media.DATA,
-                    MediaStore.Video.Media.DISPLAY_NAME,
-                    MediaStore.Video.Media.SIZE,
-                    MediaStore.Video.Media.DATE_MODIFIED,
-                    MediaStore.Video.Media.MIME_TYPE,
-                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME
-                )
-                val sortOrder = "${MediaStore.Video.Media.DATE_MODIFIED} DESC"
-                val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
+                val videoMap = LinkedHashMap<String, FileInfoEntry>()
+                val vidExts = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "flv", "ts", "m4v", "wmv", "mpg", "mpeg")
 
-                cursor?.use {
-                    val dataIndex = it.getColumnIndex(MediaStore.Video.Media.DATA)
-                    val nameIndex = it.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
-                    val sizeIndex = it.getColumnIndex(MediaStore.Video.Media.SIZE)
-                    val dateIndex = it.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
-                    val mimeIndex = it.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
-                    val bucketIndex = it.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+                // 1. Direct targeted deep scan of major video storage locations:
+                val storageRoot = Environment.getExternalStorageDirectory()
+                if (storageRoot != null && storageRoot.exists()) {
+                    // DCIM (Snapchat, Camera, Screenrecorder, etc.)
+                    val dcim = File(storageRoot, "DCIM")
+                    if (dcim.exists()) scanVideosInDirectory(dcim, 0, 5, vidExts, videoMap)
 
-                    while (it.moveToNext()) {
-                        val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
-                        if (filePath.isNullOrEmpty()) continue
+                    // Download (including movie subfolders like Ramayana...mkv)
+                    val download = File(storageRoot, "Download")
+                    if (download.exists()) scanVideosInDirectory(download, 0, 5, vidExts, videoMap)
 
-                        val file = File(filePath)
-                        if (file.name.startsWith(".")) continue
+                    // Movies
+                    val movies = File(storageRoot, "Movies")
+                    if (movies.exists()) scanVideosInDirectory(movies, 0, 5, vidExts, videoMap)
 
-                        val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
-                        if (!videoMap.containsKey(canonical)) {
-                            val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
-                                it.getString(nameIndex)
-                            } else {
-                                file.name
+                    // Pictures
+                    val pictures = File(storageRoot, "Pictures")
+                    if (pictures.exists()) scanVideosInDirectory(pictures, 0, 5, vidExts, videoMap)
+
+                    // WhatsApp Media
+                    val waMedia = File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video")
+                    if (waMedia.exists()) scanVideosInDirectory(waMedia, 0, 5, vidExts, videoMap)
+
+                    // Telegram Media
+                    val tgMedia = File(storageRoot, "Android/media/org.telegram.messenger")
+                    if (tgMedia.exists()) scanVideosInDirectory(tgMedia, 0, 6, vidExts, videoMap)
+
+                    // Android/media in general
+                    val androidMedia = File(storageRoot, "Android/media")
+                    if (androidMedia.exists()) scanVideosInDirectory(androidMedia, 0, 7, vidExts, videoMap)
+
+                    // Whole internal storage
+                    scanVideosInDirectory(storageRoot, 0, 4, vidExts, videoMap)
+                }
+
+                // 2. Query MediaStore Videos to supplement any indexed items
+                try {
+                    val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    val projection = arrayOf(
+                        MediaStore.Video.Media.DATA,
+                        MediaStore.Video.Media.DISPLAY_NAME,
+                        MediaStore.Video.Media.SIZE,
+                        MediaStore.Video.Media.DATE_MODIFIED,
+                        MediaStore.Video.Media.MIME_TYPE,
+                        MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+                    )
+                    val sortOrder = "${MediaStore.Video.Media.DATE_MODIFIED} DESC"
+                    val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
+
+                    cursor?.use {
+                        val dataIndex = it.getColumnIndex(MediaStore.Video.Media.DATA)
+                        val nameIndex = it.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                        val sizeIndex = it.getColumnIndex(MediaStore.Video.Media.SIZE)
+                        val dateIndex = it.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+                        val mimeIndex = it.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
+                        val bucketIndex = it.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+
+                        while (it.moveToNext()) {
+                            val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
+                            if (filePath.isNullOrEmpty()) continue
+
+                            val file = File(filePath)
+                            if (file.name.startsWith(".")) continue
+
+                            val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
+                            if (!videoMap.containsKey(canonical)) {
+                                val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
+                                    it.getString(nameIndex)
+                                } else {
+                                    file.name
+                                }
+                                val size = if (sizeIndex != -1) it.getLong(sizeIndex) else if (file.exists()) file.length() else 0L
+                                val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else if (file.exists()) file.lastModified() else System.currentTimeMillis()
+                                val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
+                                    it.getString(mimeIndex)
+                                } else {
+                                    getMimeType(file)
+                                }
+
+                                var bucketName = if (bucketIndex != -1 && !it.getString(bucketIndex).isNullOrEmpty()) {
+                                    it.getString(bucketIndex)
+                                } else {
+                                    file.parentFile?.name ?: "Videos"
+                                }
+                                if (bucketName.endsWith(".mkv", ignoreCase = true) || bucketName.endsWith(".mp4", ignoreCase = true)) {
+                                    val gp = file.parentFile?.parentFile?.name
+                                    bucketName = if (!gp.isNullOrEmpty() && gp != "0") gp else bucketName.substringBeforeLast(".")
+                                }
+
+                                val ext = getFileExtension(fileName)
+                                videoMap[canonical] = FileInfoEntry(
+                                    file = file,
+                                    name = fileName,
+                                    size = size,
+                                    lastModified = lastModified,
+                                    mimeType = mimeType,
+                                    parentFolder = bucketName,
+                                    extension = ext
+                                )
                             }
-                            val size = if (sizeIndex != -1) it.getLong(sizeIndex) else if (file.exists()) file.length() else 0L
-                            val lastModified = if (dateIndex != -1) it.getLong(dateIndex) * 1000L else if (file.exists()) file.lastModified() else System.currentTimeMillis()
-                            val mimeType = if (mimeIndex != -1 && !it.getString(mimeIndex).isNullOrEmpty()) {
-                                it.getString(mimeIndex)
-                            } else {
-                                getMimeType(file)
-                            }
-
-                            var bucketName = if (bucketIndex != -1 && !it.getString(bucketIndex).isNullOrEmpty()) {
-                                it.getString(bucketIndex)
-                            } else {
-                                file.parentFile?.name ?: "Videos"
-                            }
-                            if (bucketName.endsWith(".mkv", ignoreCase = true) || bucketName.endsWith(".mp4", ignoreCase = true)) {
-                                val gp = file.parentFile?.parentFile?.name
-                                bucketName = if (!gp.isNullOrEmpty() && gp != "0") gp else bucketName.substringBeforeLast(".")
-                            }
-
-                            val ext = getFileExtension(fileName)
-                            videoMap[canonical] = FileInfoEntry(
-                                file = file,
-                                name = fileName,
-                                size = size,
-                                lastModified = lastModified,
-                                mimeType = mimeType,
-                                parentFolder = bucketName,
-                                extension = ext
-                            )
                         }
                     }
+                } catch (e: Exception) {
                 }
+
+                // 3. Sort descending
+                val sortedList = videoMap.values.sortedByDescending { it.lastModified }
+                val array = Arguments.createArray()
+
+                for (item in sortedList) {
+                    val map = Arguments.createMap().apply {
+                        putString("id", item.file.absolutePath)
+                        putString("name", item.name)
+                        putString("path", item.file.absolutePath)
+                        putBoolean("isDirectory", false)
+                        putDouble("size", item.size.toDouble())
+                        putDouble("lastModified", item.lastModified.toDouble())
+                        putString("extension", item.extension)
+                        putString("mimeType", item.mimeType)
+                        putBoolean("isHidden", false)
+                        putString("parentFolder", item.parentFolder)
+                        putString("thumbnailUri", "file://${item.file.absolutePath}")
+                    }
+                    array.pushMap(map)
+                }
+
+                promise.resolve(array)
             } catch (e: Exception) {
+                promise.reject("GET_VIDEOS_ERROR", e.message, e)
             }
-
-            // 3. Sort descending
-            val sortedList = videoMap.values.sortedByDescending { it.lastModified }
-            val array = Arguments.createArray()
-
-            for (item in sortedList) {
-                val map = Arguments.createMap().apply {
-                    putString("id", item.file.absolutePath)
-                    putString("name", item.name)
-                    putString("path", item.file.absolutePath)
-                    putBoolean("isDirectory", false)
-                    putDouble("size", item.size.toDouble())
-                    putDouble("lastModified", item.lastModified.toDouble())
-                    putString("extension", item.extension)
-                    putString("mimeType", item.mimeType)
-                    putBoolean("isHidden", false)
-                    putString("parentFolder", item.parentFolder)
-                    putString("thumbnailUri", "file://${item.file.absolutePath}")
-                }
-                array.pushMap(map)
-            }
-
-            promise.resolve(array)
-        } catch (e: Exception) {
-            promise.reject("GET_VIDEOS_ERROR", e.message, e)
         }
     }
 
@@ -895,89 +901,97 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun createDirectory(parentPath: String, dirName: String, promise: Promise) {
-        try {
-            val newDir = File(parentPath, dirName)
-            if (newDir.exists()) {
-                promise.reject("ALREADY_EXISTS", "Directory already exists")
-                return
+        ioExecutor.execute {
+            try {
+                val newDir = File(parentPath, dirName)
+                if (newDir.exists()) {
+                    promise.reject("ALREADY_EXISTS", "Directory already exists")
+                    return@execute
+                }
+                val success = newDir.mkdirs()
+                if (success) {
+                    promise.resolve(newDir.absolutePath)
+                } else {
+                    promise.reject("CREATE_DIR_FAILED", "Failed to create directory")
+                }
+            } catch (e: Exception) {
+                promise.reject("CREATE_DIR_ERROR", e.message, e)
             }
-            val success = newDir.mkdirs()
-            if (success) {
-                promise.resolve(newDir.absolutePath)
-            } else {
-                promise.reject("CREATE_DIR_FAILED", "Failed to create directory")
-            }
-        } catch (e: Exception) {
-            promise.reject("CREATE_DIR_ERROR", e.message, e)
         }
     }
 
     @ReactMethod
     fun createFile(parentPath: String, fileName: String, content: String, promise: Promise) {
-        try {
-            val file = File(parentPath, fileName)
-            if (file.exists()) {
-                promise.reject("ALREADY_EXISTS", "File already exists")
-                return
+        ioExecutor.execute {
+            try {
+                val file = File(parentPath, fileName)
+                if (file.exists()) {
+                    promise.reject("ALREADY_EXISTS", "File already exists")
+                    return@execute
+                }
+                val parent = file.parentFile
+                if (parent != null && !parent.exists()) {
+                    parent.mkdirs()
+                }
+                file.writeText(content)
+                MediaScannerConnection.scanFile(
+                    reactContext,
+                    arrayOf(file.absolutePath),
+                    null,
+                    null
+                )
+                promise.resolve(file.absolutePath)
+            } catch (e: Exception) {
+                promise.reject("CREATE_FILE_ERROR", e.message, e)
             }
-            val parent = file.parentFile
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs()
-            }
-            file.writeText(content)
-            MediaScannerConnection.scanFile(
-                reactContext,
-                arrayOf(file.absolutePath),
-                null,
-                null
-            )
-            promise.resolve(file.absolutePath)
-        } catch (e: Exception) {
-            promise.reject("CREATE_FILE_ERROR", e.message, e)
         }
     }
 
     @ReactMethod
     fun renameItem(path: String, newName: String, promise: Promise) {
-        try {
-            val file = File(path)
-            if (!file.exists()) {
-                promise.reject("NOT_FOUND", "Item not found")
-                return
+        ioExecutor.execute {
+            try {
+                val file = File(path)
+                if (!file.exists()) {
+                    promise.reject("NOT_FOUND", "Item not found")
+                    return@execute
+                }
+                val parent = file.parentFile
+                val newFile = File(parent, newName)
+                if (newFile.exists()) {
+                    promise.reject("TARGET_EXISTS", "Target name already exists")
+                    return@execute
+                }
+                val success = file.renameTo(newFile)
+                if (success) {
+                    promise.resolve(newFile.absolutePath)
+                } else {
+                    promise.reject("RENAME_FAILED", "Could not rename file")
+                }
+            } catch (e: Exception) {
+                promise.reject("RENAME_ERROR", e.message, e)
             }
-            val parent = file.parentFile
-            val newFile = File(parent, newName)
-            if (newFile.exists()) {
-                promise.reject("TARGET_EXISTS", "Target name already exists")
-                return
-            }
-            val success = file.renameTo(newFile)
-            if (success) {
-                promise.resolve(newFile.absolutePath)
-            } else {
-                promise.reject("RENAME_FAILED", "Could not rename file")
-            }
-        } catch (e: Exception) {
-            promise.reject("RENAME_ERROR", e.message, e)
         }
     }
 
     @ReactMethod
     fun deleteItem(path: String, promise: Promise) {
-        try {
-            val file = File(path)
-            if (!file.exists()) {
-                promise.resolve(true)
-                return
+        ioExecutor.execute {
+            try {
+                val file = File(path)
+                if (!file.exists()) {
+                    promise.resolve(true)
+                    return@execute
+                }
+                val success = deleteRecursive(file)
+                if (success) {
+                    promise.resolve(true)
+                } else {
+                    promise.reject("DELETE_FAILED", "Could not delete item")
+                }
+            } catch (e: Exception) {
+                promise.reject("DELETE_ERROR", e.message, e)
             }
-            val success = deleteRecursive(file)
-            if (success) {
-                promise.resolve(true)
-            } else {
-                promise.reject("DELETE_FAILED", "Could not delete item")
-            }
-        } catch (e: Exception) {
-            promise.reject("DELETE_ERROR", e.message, e)
         }
     }
 
@@ -996,20 +1010,22 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun copyItem(sourcePath: String, destinationDirPath: String, promise: Promise) {
-        try {
-            val source = File(sourcePath)
-            val destDir = File(destinationDirPath)
-            if (!source.exists()) {
-                promise.reject("SOURCE_NOT_FOUND", "Source does not exist")
-                return
-            }
-            if (!destDir.exists()) destDir.mkdirs()
+        ioExecutor.execute {
+            try {
+                val source = File(sourcePath)
+                val destDir = File(destinationDirPath)
+                if (!source.exists()) {
+                    promise.reject("SOURCE_NOT_FOUND", "Source does not exist")
+                    return@execute
+                }
+                if (!destDir.exists()) destDir.mkdirs()
 
-            val target = File(destDir, source.name)
-            copyRecursive(source, target)
-            promise.resolve(target.absolutePath)
-        } catch (e: Exception) {
-            promise.reject("COPY_ERROR", e.message, e)
+                val target = File(destDir, source.name)
+                copyRecursive(source, target)
+                promise.resolve(target.absolutePath)
+            } catch (e: Exception) {
+                promise.reject("COPY_ERROR", e.message, e)
+            }
         }
     }
 
@@ -1031,65 +1047,69 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun moveItem(sourcePath: String, destinationDirPath: String, promise: Promise) {
-        try {
-            val source = File(sourcePath)
-            val destDir = File(destinationDirPath)
-            if (!source.exists()) {
-                promise.reject("SOURCE_NOT_FOUND", "Source does not exist")
-                return
-            }
-            if (!destDir.exists()) destDir.mkdirs()
+        ioExecutor.execute {
+            try {
+                val source = File(sourcePath)
+                val destDir = File(destinationDirPath)
+                if (!source.exists()) {
+                    promise.reject("SOURCE_NOT_FOUND", "Source does not exist")
+                    return@execute
+                }
+                if (!destDir.exists()) destDir.mkdirs()
 
-            val target = File(destDir, source.name)
-            val moved = source.renameTo(target)
-            if (moved) {
-                promise.resolve(target.absolutePath)
-            } else {
-                // Fallback copy + delete
-                copyRecursive(source, target)
-                deleteRecursive(source)
-                promise.resolve(target.absolutePath)
+                val target = File(destDir, source.name)
+                val moved = source.renameTo(target)
+                if (moved) {
+                    promise.resolve(target.absolutePath)
+                } else {
+                    // Fallback copy + delete
+                    copyRecursive(source, target)
+                    deleteRecursive(source)
+                    promise.resolve(target.absolutePath)
+                }
+            } catch (e: Exception) {
+                promise.reject("MOVE_ERROR", e.message, e)
             }
-        } catch (e: Exception) {
-            promise.reject("MOVE_ERROR", e.message, e)
         }
     }
 
     @ReactMethod
     fun calculateChecksum(filePath: String, algorithm: String, promise: Promise) {
-        try {
-            val file = File(filePath)
-            if (!file.exists() || file.isDirectory) {
-                promise.reject("INVALID_FILE", "Target is not a valid file")
-                return
-            }
-
-            val algo = if (algorithm.equals("SHA256", ignoreCase = true) || algorithm.equals("SHA-256", ignoreCase = true)) {
-                "SHA-256"
-            } else {
-                "MD5"
-            }
-
-            val digest = MessageDigest.getInstance(algo)
-            FileInputStream(file).use { fis ->
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                while (fis.read(buffer).also { bytesRead = it } != -1) {
-                    digest.update(buffer, 0, bytesRead)
+        ioExecutor.execute {
+            try {
+                val file = File(filePath)
+                if (!file.exists() || file.isDirectory) {
+                    promise.reject("INVALID_FILE", "Target is not a valid file")
+                    return@execute
                 }
-            }
 
-            val hashBytes = digest.digest()
-            val hexString = StringBuilder()
-            for (b in hashBytes) {
-                val hex = Integer.toHexString(0xff and b.toInt())
-                if (hex.length == 1) hexString.append('0')
-                hexString.append(hex)
-            }
+                val algo = if (algorithm.equals("SHA256", ignoreCase = true) || algorithm.equals("SHA-256", ignoreCase = true)) {
+                    "SHA-256"
+                } else {
+                    "MD5"
+                }
 
-            promise.resolve(hexString.toString())
-        } catch (e: Exception) {
-            promise.reject("CHECKSUM_ERROR", e.message, e)
+                val digest = MessageDigest.getInstance(algo)
+                FileInputStream(file).use { fis ->
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    while (fis.read(buffer).also { bytesRead = it } != -1) {
+                        digest.update(buffer, 0, bytesRead)
+                    }
+                }
+
+                val hashBytes = digest.digest()
+                val hexString = StringBuilder()
+                for (b in hashBytes) {
+                    val hex = Integer.toHexString(0xff and b.toInt())
+                    if (hex.length == 1) hexString.append('0')
+                    hexString.append(hex)
+                }
+
+                promise.resolve(hexString.toString())
+            } catch (e: Exception) {
+                promise.reject("CHECKSUM_ERROR", e.message, e)
+            }
         }
     }
 
@@ -1827,7 +1847,15 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
     fun savePreference(key: String, value: String, promise: Promise) {
         try {
             val prefs = reactContext.getSharedPreferences("nexfile_prefs", Context.MODE_PRIVATE)
-            prefs.edit().putString(key, value).apply()
+            prefs.edit().putString(key, value).commit()
+            if (key == "NEX_VAULT_PIN_HASH" && value.isNotEmpty()) {
+                try {
+                    val vaultDir = File(android.os.Environment.getExternalStorageDirectory(), ".vault")
+                    if (!vaultDir.exists()) vaultDir.mkdirs()
+                    val hashFile = File(vaultDir, ".vault_pin_hash")
+                    hashFile.writeText(value)
+                } catch (ignored: Exception) {}
+            }
             promise.resolve(true)
         } catch (e: Exception) {
             promise.resolve(false)
@@ -1838,8 +1866,31 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
     fun getPreference(key: String, defaultValue: String, promise: Promise) {
         try {
             val prefs = reactContext.getSharedPreferences("nexfile_prefs", Context.MODE_PRIVATE)
-            val v = prefs.getString(key, defaultValue) ?: defaultValue
-            promise.resolve(v)
+            var v = prefs.getString(key, null)
+            if (key == "NEX_VAULT_PIN_HASH") {
+                if (v.isNullOrEmpty()) {
+                    try {
+                        val hashFile = File(android.os.Environment.getExternalStorageDirectory(), ".vault/.vault_pin_hash")
+                        if (hashFile.exists()) {
+                            val diskHash = hashFile.readText().trim()
+                            if (diskHash.isNotEmpty()) {
+                                v = diskHash
+                                prefs.edit().putString(key, diskHash).commit()
+                            }
+                        }
+                    } catch (ignored: Exception) {}
+                } else {
+                    try {
+                        val vaultDir = File(android.os.Environment.getExternalStorageDirectory(), ".vault")
+                        if (!vaultDir.exists()) vaultDir.mkdirs()
+                        val hashFile = File(vaultDir, ".vault_pin_hash")
+                        if (!hashFile.exists()) {
+                            hashFile.writeText(v)
+                        }
+                    } catch (ignored: Exception) {}
+                }
+            }
+            promise.resolve(v ?: defaultValue)
         } catch (e: Exception) {
             promise.resolve(defaultValue)
         }

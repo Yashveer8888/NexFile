@@ -178,8 +178,8 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const insets = useSafeAreaInsets();
   const { colors } = useThemeStore();
 
-  const [images, setImages] = useState<FileItem[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [images, setImages] = useState<FileItem[]>(() => fileService.getCachedImages() || []);
+  const [isLoading, setIsLoading] = useState<boolean>(() => !fileService.hasCachedImages());
   const [activeTab, setActiveTab] = useState<'all' | 'folders'>('all');
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
 
@@ -209,6 +209,9 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const [pendingBatchVault, setPendingBatchVault] = useState(false);
 
   const handleLockInVault = async (item: FileItem) => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFileToVault } = useVaultStore.getState();
     if (!isPinSet) {
       setPendingVaultItem(item);
@@ -219,7 +222,7 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
     try {
       await importFileToVault(item.path, '0000');
       Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
-      loadImages();
+      loadImages(true);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock file in vault');
     }
@@ -235,21 +238,31 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
       await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
       clearSelection();
       Alert.alert('Passcode Set & Secured', `${selected.length} image(s) locked in Private Folder.`);
-      loadImages();
+      loadImages(true);
     } else if (pendingVaultItem) {
       const it = pendingVaultItem;
       setPendingVaultItem(null);
       await useVaultStore.getState().importFileToVault(it.path, pin);
       Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
-      loadImages();
+      loadImages(true);
     }
   };
 
-  const loadImages = async () => {
-    setIsLoading(true);
+  const loadImages = async (force: boolean = false) => {
+    const hasCache = fileService.hasCachedImages();
+    if (!hasCache || force) {
+      setIsLoading(true);
+    }
     try {
-      const all = await fileService.getAllImages();
-      setImages(all);
+      const all = await fileService.getAllImages(force);
+      setImages((prev) => {
+        if (!force && prev.length === all.length && prev.length > 0) {
+          if (prev[0]?.id === all[0]?.id && prev[0]?.lastModified === all[0]?.lastModified) {
+            return prev;
+          }
+        }
+        return all;
+      });
     } catch (e) {
       console.warn('Failed to load images:', e);
     } finally {
@@ -258,7 +271,7 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   };
 
   useEffect(() => {
-    loadImages();
+    loadImages(false);
   }, []);
 
   // Compute folder-wise groups
@@ -342,15 +355,20 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
 
   const handleBatchDelete = async (permanent: boolean) => {
     const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
-    for (const item of selected) {
-      await fileService.delete(item.path, !permanent);
-    }
+    const selectedIds = new Set(selected.map((f) => f.id));
+    const selectedPaths = selected.map((f) => f.path);
+    // Instant optimistic update in 0ms
+    setImages((prev) => prev.filter((img) => !selectedIds.has(img.id) && !selectedIds.has(img.path)));
     setConfirmBatchDelete(false);
     clearSelection();
-    loadImages();
+    fileService.clearDirectoryCache();
+    Promise.all(selectedPaths.map((p) => fileService.delete(p, !permanent))).catch(console.warn);
   };
 
   const handleBatchLockInVault = async () => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFilesToVault } = useVaultStore.getState();
     const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
     if (selected.length === 0) return;
@@ -361,11 +379,14 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
       return;
     }
 
+    const selectedIds = new Set(selected.map((f) => f.id));
+    setImages((prev) => prev.filter((img) => !selectedIds.has(img.id) && !selectedIds.has(img.path)));
+    clearSelection();
+    fileService.clearDirectoryCache();
+
     try {
       await importFilesToVault(selected.map((item) => item.path), '0000');
-      clearSelection();
       Alert.alert('Vault Secured', `${selected.length} image(s) locked in Private Folder.`);
-      loadImages();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock images in vault');
     }
@@ -684,7 +705,7 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
             refreshControl={
               <RefreshControl
                 refreshing={isLoading}
-                onRefresh={loadImages}
+                onRefresh={() => loadImages(true)}
                 colors={[colors.primary]}
               />
             }
@@ -738,7 +759,7 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
             refreshControl={
               <RefreshControl
                 refreshing={isLoading}
-                onRefresh={loadImages}
+                onRefresh={() => loadImages(true)}
                 colors={[colors.primary]}
               />
             }
@@ -757,13 +778,10 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         <FileActionSheet
           selectedCount={selectedFileIds.size}
           totalCount={currentImagesList.length}
+          hideMove={true}
           onCopy={() => {
             const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
             setClipboard('copy', selected);
-          }}
-          onMove={() => {
-            const selected = currentImagesList.filter((f) => selectedFileIds.has(f.id));
-            setClipboard('move', selected);
           }}
           onDelete={() => setConfirmBatchDelete(true)}
           onShare={handleBatchShare}
@@ -855,11 +873,11 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
       <ItemActionModal
         visible={Boolean(actionModalItem)}
         item={actionModalItem}
+        hideMove={true}
         onClose={() => setActionModalItem(null)}
         onOpenWith={(item) => fileService.openWith(item.path)}
         onShare={(item) => fileService.shareFiles([item.path])}
         onCopy={(item) => setClipboard('copy', [item])}
-        onMove={(item) => setClipboard('move', [item])}
         onRename={(item) => setRenameItemTarget(item)}
         onCompress={(item) => setCompressTargetItem(item)}
         onToggleFavorite={(item) => {
@@ -887,9 +905,12 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         itemName={deleteTarget?.name}
         onDelete={async (permanent) => {
           if (deleteTarget) {
-            await deleteSingleWithChoice(deleteTarget.path, permanent);
+            const targetId = deleteTarget.id;
+            const targetPath = deleteTarget.path;
+            setImages((prev) => prev.filter((img) => img.id !== targetId && img.path !== targetPath));
             setDeleteTarget(null);
-            loadImages();
+            fileService.clearDirectoryCache();
+            fileService.delete(targetPath, !permanent).catch(console.warn);
           }
         }}
         onCancel={() => setDeleteTarget(null)}
@@ -924,9 +945,21 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         initialName={renameItemTarget?.name || ''}
         onRename={async (newName) => {
           if (renameItemTarget) {
-            await renameItem(renameItemTarget.path, newName);
+            const oldPath = renameItemTarget.path;
+            const oldId = renameItemTarget.id;
+            const parentDir = oldPath.substring(0, oldPath.lastIndexOf('/'));
+            const newPath = `${parentDir}/${newName}`;
+            const newExt = newName.includes('.') ? '.' + newName.split('.').pop() : '';
+            setImages((prev) =>
+              prev.map((img) =>
+                img.id === oldId || img.path === oldPath
+                  ? { ...img, name: newName, path: newPath, id: newPath, extension: newExt }
+                  : img
+              )
+            );
             setRenameItemTarget(null);
-            loadImages();
+            fileService.clearDirectoryCache();
+            fileService.rename(oldPath, newName).catch(console.warn);
           }
         }}
         onCancel={() => setRenameItemTarget(null)}

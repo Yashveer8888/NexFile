@@ -89,9 +89,12 @@ export const ImageViewerScreen: React.FC<ImageViewerScreenProps> = ({
 
   const initialPinchDist = useRef<number>(0);
   const pinchStartScale = useRef<number>(1);
+  const pinchStartFocal = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const pinchFocalImgPoint = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lastTouchPos = useRef<{ x: number; y: number } | null>(null);
   const singleTapTimerRef = useRef<any>(null);
   const lastTapTimeRef = useRef<number>(0);
+  const lastTapPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Sync Favorite status & reset transformations on photo change
   useEffect(() => {
@@ -191,42 +194,77 @@ export const ImageViewerScreen: React.FC<ImageViewerScreenProps> = ({
     }
   };
 
-  // Pinch, Pan, and Double Tap Responder
+  // Pinch, Pan, and Double Tap Responder with Focal Zoom Support
   const panResponder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (evt) => {
+          const viewportH = SCREEN_HEIGHT * 0.75;
+          const centerX = SCREEN_WIDTH / 2;
+          const centerY = viewportH / 2;
+
           if (evt.nativeEvent.touches.length >= 2) {
             const [t0, t1] = evt.nativeEvent.touches;
-            initialPinchDist.current = Math.hypot(t1.pageX - t0.pageX, t1.pageY - t0.pageY);
+            const dist = Math.hypot(t1.pageX - t0.pageX, t1.pageY - t0.pageY);
+            initialPinchDist.current = dist;
             pinchStartScale.current = currentScaleRef.current;
+            const fx = (t0.pageX + t1.pageX) / 2;
+            const fy = (t0.pageY + t1.pageY) / 2;
+            pinchStartFocal.current = { x: fx, y: fy };
+            pinchFocalImgPoint.current = {
+              x: (fx - centerX - currentPanRef.current.x) / currentScaleRef.current,
+              y: (fy - centerY - currentPanRef.current.y) / currentScaleRef.current,
+            };
             lastTouchPos.current = null;
           } else if (evt.nativeEvent.touches.length === 1) {
             initialPinchDist.current = 0;
             const t = evt.nativeEvent.touches[0];
             lastTouchPos.current = { x: t.pageX, y: t.pageY };
+            lastTapPosRef.current = { x: t.pageX, y: t.pageY };
           }
         },
         onPanResponderMove: (evt, gestureState) => {
           const touches = evt.nativeEvent.touches;
+          const viewportH = SCREEN_HEIGHT * 0.75;
+          const centerX = SCREEN_WIDTH / 2;
+          const centerY = viewportH / 2;
 
           if (touches.length >= 2) {
-            // Two-finger pinch to zoom in/out
+            // Two-finger pinch to zoom in/out with Focal Point Tracking
             const t0 = touches[0];
             const t1 = touches[1];
             const dist = Math.hypot(t1.pageX - t0.pageX, t1.pageY - t0.pageY);
+            const currFocalX = (t0.pageX + t1.pageX) / 2;
+            const currFocalY = (t0.pageY + t1.pageY) / 2;
 
             if (initialPinchDist.current === 0) {
-              // Finger 2 touched down during active gesture
               initialPinchDist.current = dist;
               pinchStartScale.current = currentScaleRef.current;
+              pinchStartFocal.current = { x: currFocalX, y: currFocalY };
+              pinchFocalImgPoint.current = {
+                x: (currFocalX - centerX - currentPanRef.current.x) / currentScaleRef.current,
+                y: (currFocalY - centerY - currentPanRef.current.y) / currentScaleRef.current,
+              };
             } else if (initialPinchDist.current > 0) {
               const scaleRatio = dist / initialPinchDist.current;
-              const nextScale = Math.max(1, Math.min(5, pinchStartScale.current * scaleRatio));
+              const nextScale = Math.max(1, Math.min(6, pinchStartScale.current * scaleRatio));
               currentScaleRef.current = nextScale;
               setScale(nextScale);
+
+              // Maintain focal point under fingers
+              const rawNextPanX = currFocalX - centerX - nextScale * pinchFocalImgPoint.current.x;
+              const rawNextPanY = currFocalY - centerY - nextScale * pinchFocalImgPoint.current.y;
+
+              const maxPanX = (SCREEN_WIDTH * (nextScale - 1)) / 1.5;
+              const maxPanY = (viewportH * (nextScale - 1)) / 1.5;
+
+              const nextPanX = Math.max(-maxPanX, Math.min(maxPanX, rawNextPanX));
+              const nextPanY = Math.max(-maxPanY, Math.min(maxPanY, rawNextPanY));
+
+              currentPanRef.current = { x: nextPanX, y: nextPanY };
+              setPan({ x: nextPanX, y: nextPanY });
             }
             lastTouchPos.current = null;
           } else if (touches.length === 1) {
@@ -239,8 +277,8 @@ export const ImageViewerScreen: React.FC<ImageViewerScreenProps> = ({
                 const dx = t.pageX - lastTouchPos.current.x;
                 const dy = t.pageY - lastTouchPos.current.y;
 
-                const maxPanX = (SCREEN_WIDTH * (currentScaleRef.current - 1)) / 1.6;
-                const maxPanY = (SCREEN_HEIGHT * 0.75 * (currentScaleRef.current - 1)) / 1.6;
+                const maxPanX = (SCREEN_WIDTH * (currentScaleRef.current - 1)) / 1.5;
+                const maxPanY = (viewportH * (currentScaleRef.current - 1)) / 1.5;
 
                 const nextX = Math.max(-maxPanX, Math.min(maxPanX, currentPanRef.current.x + dx));
                 const nextY = Math.max(-maxPanY, Math.min(maxPanY, currentPanRef.current.y + dy));
@@ -282,11 +320,30 @@ export const ImageViewerScreen: React.FC<ImageViewerScreenProps> = ({
                 currentPanRef.current = { x: 0, y: 0 };
                 setPan({ x: 0, y: 0 });
               } else {
-                // If normal 1x -> Zoom in to 2.5x
-                currentScaleRef.current = 2.5;
-                setScale(2.5);
-                currentPanRef.current = { x: 0, y: 0 };
-                setPan({ x: 0, y: 0 });
+                // If normal 1x -> Zoom in to 2.5x targeted at touched point
+                const viewportH = SCREEN_HEIGHT * 0.75;
+                const centerX = SCREEN_WIDTH / 2;
+                const centerY = viewportH / 2;
+                const tapX = lastTapPosRef.current.x || centerX;
+                const tapY = lastTapPosRef.current.y || centerY;
+
+                const targetScale = 2.5;
+                const tapImgX = (tapX - centerX) / 1;
+                const tapImgY = (tapY - centerY) / 1;
+
+                const rawPanX = tapX - centerX - targetScale * tapImgX;
+                const rawPanY = tapY - centerY - targetScale * tapImgY;
+
+                const maxPanX = (SCREEN_WIDTH * (targetScale - 1)) / 1.5;
+                const maxPanY = (viewportH * (targetScale - 1)) / 1.5;
+
+                const clampedPanX = Math.max(-maxPanX, Math.min(maxPanX, rawPanX));
+                const clampedPanY = Math.max(-maxPanY, Math.min(maxPanY, rawPanY));
+
+                currentScaleRef.current = targetScale;
+                setScale(targetScale);
+                currentPanRef.current = { x: clampedPanX, y: clampedPanY };
+                setPan({ x: clampedPanX, y: clampedPanY });
               }
             } else {
               // Potential single tap: wait 300ms before toggling UI

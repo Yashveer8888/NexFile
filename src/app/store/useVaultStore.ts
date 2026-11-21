@@ -17,7 +17,7 @@ interface VaultState {
   lastUnlockedTime: number;
 
   hydrate: () => Promise<void>;
-  setPin: (pin: string, enableBiometric?: boolean) => void;
+  setPin: (pin: string, enableBiometric?: boolean) => Promise<void> | void;
   setBiometricEnabled: (enabled: boolean) => void;
   unlockWithPin: (pin: string) => boolean;
   unlockWithBiometric: () => void;
@@ -90,17 +90,20 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     }
   },
 
-  setPin: (pin: string, enableBiometric: boolean = true) => {
+  setPin: async (pin: string, enableBiometric: boolean = true) => {
     const hash = vaultService.hashPin(pin);
     set({
       isPinSet: true,
       pinHash: hash,
       biometricEnabled: enableBiometric,
       isUnlocked: true,
+      isHydrated: true,
       lastUnlockedTime: Date.now(),
     });
-    fileService.savePreference(PREF_KEY_PIN_HASH, hash);
-    fileService.savePreference(PREF_KEY_BIOMETRIC, enableBiometric ? 'true' : 'false');
+    await Promise.all([
+      fileService.savePreference(PREF_KEY_PIN_HASH, hash),
+      fileService.savePreference(PREF_KEY_BIOMETRIC, enableBiometric ? 'true' : 'false'),
+    ]);
   },
 
   setBiometricEnabled: (enabled: boolean) => {

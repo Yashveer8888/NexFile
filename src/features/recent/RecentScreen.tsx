@@ -109,6 +109,7 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
   const [batchCompressVisible, setBatchCompressVisible] = useState(false);
   const [checksumItem, setChecksumItem] = useState<FileItemType | null>(null);
   const [hasAllFilesAccess, setHasAllFilesAccess] = useState<boolean>(true);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [setPinModalVisible, setSetPinModalVisible] = useState(false);
   const [pendingVaultItem, setPendingVaultItem] = useState<FileItemType | null>(null);
   const [pendingBatchVault, setPendingBatchVault] = useState(false);
@@ -162,7 +163,10 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
     const sub = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active') {
         checkPermissionStatus();
-        refresh();
+        // Only load if no files are currently present
+        if (useFileStore.getState().recentFiles.length === 0) {
+          refresh();
+        }
       }
     });
 
@@ -180,14 +184,28 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
     await requestAllFilesPermission();
   };
 
-  const displayedFiles = (activeCategory === 'all' ? recentFiles : categoryFiles)
-    .filter((file) => isUsefulRecentFile(file))
-    .slice()
-    .sort((a, b) => b.lastModified - a.lastModified);
+  const handlePullRefresh = useCallback(async () => {
+    setIsPullRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  }, [refresh]);
+
+  const displayedFiles = useMemo(() => {
+    return (activeCategory === 'all' ? recentFiles : categoryFiles)
+      .filter((file) => isUsefulRecentFile(file))
+      .slice()
+      .sort((a, b) => b.lastModified - a.lastModified);
+  }, [activeCategory, recentFiles, categoryFiles]);
+
   const isSelectionMode = selectedFileIds.size > 0;
 
   // Filter pinned favorites
-  const favoriteFiles = displayedFiles.filter((f) => f.isFavorite);
+  const favoriteFiles = useMemo(() => {
+    return displayedFiles.filter((f) => f.isFavorite);
+  }, [displayedFiles]);
 
   // Handle hardware back on Recent screen one by one
   useFocusEffect(
@@ -276,45 +294,97 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       ? primaryVolume.usedBytes / primaryVolume.totalBytes
       : 0.35;
 
-  const handleFilePress = (item: FileItemType) => {
-    if (isSelectionMode) {
+  const handleFilePress = useCallback(
+    (item: FileItemType) => {
+      if (isSelectionMode) {
+        toggleSelectFile(item.id);
+      } else if (item.isDirectory) {
+        navigation.navigate('FoldersTab');
+      } else if (isImageFile(item)) {
+        const currentRecents = useFileStore.getState().recentFiles;
+        const imageList = currentRecents.filter((f) => isImageFile(f));
+        const idx = imageList.findIndex((f) => f.id === item.id);
+        navigation.navigate('ImageViewerScreen', {
+          images: imageList.length > 0 ? imageList : [item],
+          initialIndex: Math.max(0, idx),
+        });
+      } else if (isAudioFile(item)) {
+        const currentRecents = useFileStore.getState().recentFiles;
+        const audioList = currentRecents.filter((f) => isAudioFile(f));
+        navigation.navigate('AudioPlayerScreen', {
+          file: item,
+          playlist: audioList.length > 0 ? audioList : [item],
+        });
+      } else if (isVideoFile(item)) {
+        const currentRecents = useFileStore.getState().recentFiles;
+        const videoList = currentRecents.filter((f) => isVideoFile(f));
+        navigation.navigate('MediaPlayerScreen', {
+          file: item,
+          playlist: videoList.length > 0 ? videoList : [item],
+        });
+      } else {
+        fileService.openFile(item.path, item.mimeType);
+      }
+    },
+    [isSelectionMode, toggleSelectFile, navigation]
+  );
+
+  const handleFileLongPress = useCallback(
+    (item: FileItemType) => {
       toggleSelectFile(item.id);
-    } else if (item.isDirectory) {
-      navigation.navigate('FoldersTab');
-    } else if (isImageFile(item)) {
-      const imageList = displayedFiles.filter((f) => isImageFile(f));
-      const idx = imageList.findIndex((f) => f.id === item.id);
-      navigation.navigate('ImageViewerScreen', {
-        images: imageList.length > 0 ? imageList : [item],
-        initialIndex: Math.max(0, idx),
-      });
-    } else if (isAudioFile(item)) {
-      const audioList = displayedFiles.filter((f) => isAudioFile(f));
-      navigation.navigate('AudioPlayerScreen', {
-        file: item,
-        playlist: audioList.length > 0 ? audioList : [item],
-      });
-    } else if (isVideoFile(item)) {
-      const videoList = displayedFiles.filter((f) => isVideoFile(f));
-      navigation.navigate('MediaPlayerScreen', {
-        file: item,
-        playlist: videoList.length > 0 ? videoList : [item],
-      });
-    } else {
-      fileService.openFile(item.path, item.mimeType);
-    }
-  };
+    },
+    [toggleSelectFile]
+  );
 
-  const handleFileLongPress = (item: FileItemType) => {
-    toggleSelectFile(item.id);
-  };
-
-  const handleMorePress = (item: FileItemType) => {
+  const handleMorePress = useCallback((item: FileItemType) => {
     setActionModalItem(item);
-  };
+  }, []);
+
+  const keyExtractor = useCallback((item: FileItemType) => item.path || item.id, []);
+
+  const getItemLayout = useCallback(
+    (_: any, index: number) => ({
+      length: 64,
+      offset: 64 * index,
+      index,
+    }),
+    []
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: FileItemType }) => {
+      const isSelected = selectedFileIds.has(item.id);
+      if (viewMode === 'grid') {
+        return (
+          <FileGridItem
+            item={item}
+            onPress={handleFilePress}
+            onLongPress={handleFileLongPress}
+            onMorePress={handleMorePress}
+            isSelected={isSelected}
+            isSelectionMode={isSelectionMode}
+          />
+        );
+      }
+      return (
+        <FileItem
+          item={item}
+          onPress={handleFilePress}
+          onLongPress={handleFileLongPress}
+          onMorePress={handleMorePress}
+          isSelected={isSelected}
+          isSelectionMode={isSelectionMode}
+        />
+      );
+    },
+    [viewMode, selectedFileIds, isSelectionMode, handleFilePress, handleFileLongPress, handleMorePress]
+  );
 
   // Lock single file into private vault
   const handleLockInVault = async (item: FileItemType) => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFileToVault } = useVaultStore.getState();
     if (!isPinSet) {
       setPendingVaultItem(item);
@@ -322,10 +392,15 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setSetPinModalVisible(true);
       return;
     }
+    // Optimistic instant UI update in 0ms
+    useFileStore.setState((state) => ({
+      recentFiles: state.recentFiles.filter((f) => f.id !== item.id),
+      files: state.files.filter((f) => f.id !== item.id),
+    }));
+    fileService.clearDirectoryCache();
     try {
       await importFileToVault(item.path, '0000');
       Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
-      refresh();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock file in vault');
     }
@@ -333,6 +408,9 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
 
   // Lock batch files into private vault
   const handleBatchLockInVault = async () => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFilesToVault } = useVaultStore.getState();
     const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
     if (selected.length === 0) {
@@ -344,11 +422,17 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setSetPinModalVisible(true);
       return;
     }
+    // Optimistic instant UI update in 0ms
+    const selectedIds = new Set(selected.map((f) => f.id));
+    useFileStore.setState((state) => ({
+      recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id)),
+      files: state.files.filter((f) => !selectedIds.has(f.id)),
+      selectedFileIds: new Set(),
+    }));
+    fileService.clearDirectoryCache();
     try {
       await importFilesToVault(selected.map((item) => item.path), '0000');
-      clearSelection();
       Alert.alert('Vault Secured', `${selected.length} item(s) locked in your Private Vault.`);
-      refresh();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock items in vault');
     }
@@ -360,16 +444,25 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
     if (pendingBatchVault) {
       setPendingBatchVault(false);
       const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
+      const selectedIds = new Set(selected.map((f) => f.id));
+      useFileStore.setState((state) => ({
+        recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id)),
+        files: state.files.filter((f) => !selectedIds.has(f.id)),
+        selectedFileIds: new Set(),
+      }));
+      fileService.clearDirectoryCache();
       await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
-      clearSelection();
       Alert.alert('Passcode Set & Secured', `${selected.length} item(s) locked in Private Folder.`);
-      refresh();
     } else if (pendingVaultItem) {
       const it = pendingVaultItem;
       setPendingVaultItem(null);
+      useFileStore.setState((state) => ({
+        recentFiles: state.recentFiles.filter((f) => f.id !== it.id),
+        files: state.files.filter((f) => f.id !== it.id),
+      }));
+      fileService.clearDirectoryCache();
       await useVaultStore.getState().importFileToVault(it.path, pin);
       Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
-      refresh();
     }
   };
 
@@ -380,6 +473,171 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       fileService.shareFiles(selected.map((s) => s.path));
     }
   };
+
+  const handleSelectAll = useCallback(() => {
+    if (selectedFileIds.size === displayedFiles.length) {
+      clearSelection();
+    } else {
+      useFileStore.setState({ selectedFileIds: new Set(displayedFiles.map((f) => f.id)) });
+    }
+  }, [selectedFileIds.size, displayedFiles, clearSelection]);
+
+  const renderListHeader = useMemo(() => (
+    <View style={styles.headerComponent}>
+      {/* Storage Card */}
+      <Card style={styles.storageCard}>
+        <View style={styles.storageHeader}>
+          <View style={styles.storageTitleRow}>
+            <HardDrive size={20} color={colors.primary} />
+            <Text style={[typography.labelLarge, { color: colors.text, marginLeft: 8 }]}>
+              {primaryVolume.name}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.analyzerShortcut}
+            onPress={() => navigation.navigate('StorageAnalyzerScreen')}
+          >
+            <Text style={[typography.labelSmall, { color: colors.primary }]}>Analyze</Text>
+            <ArrowUpRight size={14} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+
+        <ProgressBar
+          progress={storageUsagePercent}
+          color={storageUsagePercent > 0.85 ? colors.error : colors.primary}
+          style={{ marginTop: spacing.md }}
+        />
+
+        <View style={styles.storageStatsRow}>
+          <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+            Used:{' '}
+            <Text style={{ fontWeight: '600', color: colors.text }}>
+              {formatBytes(primaryVolume.usedBytes)}
+            </Text>
+          </Text>
+          <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+            Free:{' '}
+            <Text style={{ fontWeight: '600', color: colors.text }}>
+              {formatBytes(primaryVolume.freeBytes)}
+            </Text>
+          </Text>
+        </View>
+      </Card>
+
+      {/* Permission Banner if All Files Access is missing */}
+      {!hasAllFilesAccess && (
+        <View
+          style={[
+            styles.permissionBanner,
+            {
+              backgroundColor: colors.primary + '15',
+              borderColor: colors.primary,
+            },
+          ]}
+        >
+          <ShieldAlert size={24} color={colors.primary} style={{ marginRight: spacing.sm }} />
+          <View style={{ flex: 1, marginRight: spacing.sm }}>
+            <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700' }]}>
+              All Files Access Required
+            </Text>
+            <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 2 }]}>
+              Allow storage access to view PDF, TXT, HTML & document files.
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.grantButton, { backgroundColor: colors.primary }]}
+            onPress={handleGrantPermission}
+            activeOpacity={0.8}
+          >
+            <Text style={[typography.labelSmall, { color: '#FFFFFF', fontWeight: 'bold' }]}>
+              Grant
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Pinned Favorites Quick Access Strip */}
+      {favoriteFiles.length > 0 && (
+        <View style={styles.favoritesSection}>
+          <View style={styles.favHeaderRow}>
+            <Star size={16} color="#FFB300" fill="#FFB300" style={{ marginRight: 6 }} />
+            <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700' }]}>
+              Pinned Favorites ({favoriteFiles.length})
+            </Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.favScroll}>
+            {favoriteFiles.map((fav) => (
+              <TouchableOpacity
+                key={fav.id}
+                style={[
+                  styles.favCard,
+                  { backgroundColor: colors.surfaceVariant, borderColor: colors.border },
+                ]}
+                onPress={() => handleFilePress(fav)}
+                activeOpacity={0.7}
+              >
+                {fav.isDirectory ? (
+                  <Folder size={18} color={colors.primary} />
+                ) : (
+                  <FileCode size={18} color="#00C853" />
+                )}
+                <Text
+                  style={[typography.labelSmall, { color: colors.text, marginLeft: 6, maxWidth: 100 }]}
+                  numberOfLines={1}
+                >
+                  {fav.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Categories */}
+      <View style={styles.sectionTitleRow}>
+        <Text style={[typography.h3, { color: colors.text }]}>Categories</Text>
+      </View>
+
+      <CategoryChips
+        selectedCategory={activeCategory}
+        onSelectCategory={(cat) => {
+          if (cat === 'images') {
+            navigation.navigate('ImagesGalleryScreen');
+          } else if (cat === 'videos') {
+            navigation.navigate('VideosGalleryScreen');
+          } else if (cat === 'all') {
+            setActiveCategory('all');
+          } else {
+            navigation.navigate('CategoryFilesScreen', { category: cat });
+          }
+        }}
+      />
+
+      {/* Recent / Category Files Title */}
+      <View style={[styles.sectionTitleRow, { marginTop: spacing.lg }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={[typography.h3, { color: colors.text }]}>
+            {activeCategory === 'all' ? 'Recent Files' : `${activeCategory.toUpperCase()} Files`}
+          </Text>
+          <Text style={[typography.labelSmall, { color: colors.textMuted, marginLeft: 8 }]}>
+            ({displayedFiles.length})
+          </Text>
+        </View>
+      </View>
+    </View>
+  ), [
+    primaryVolume,
+    storageUsagePercent,
+    hasAllFilesAccess,
+    favoriteFiles,
+    activeCategory,
+    displayedFiles.length,
+    colors,
+    navigation,
+    handleGrantPermission,
+    handleFilePress,
+    setActiveCategory,
+  ]);
 
   return (
     <View
@@ -460,180 +718,20 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         data={displayedFiles}
         key={viewMode}
         numColumns={viewMode === 'grid' ? 3 : 1}
-        keyExtractor={(item) => item.id}
+        keyExtractor={keyExtractor}
+        getItemLayout={viewMode === 'list' ? getItemLayout : undefined}
+        renderItem={renderItem}
+        extraData={selectedFileIds}
+        initialNumToRender={15}
+        maxToRenderPerBatch={15}
+        windowSize={5}
+        updateCellsBatchingPeriod={16}
+        removeClippedSubviews={true}
         refreshControl={
-          <RefreshControl refreshing={isLoading} onRefresh={refresh} colors={[colors.primary]} />
+          <RefreshControl refreshing={isPullRefreshing} onRefresh={handlePullRefresh} colors={[colors.primary]} />
         }
         contentContainerStyle={styles.listContent}
-        ListHeaderComponent={
-          <View style={styles.headerComponent}>
-            {/* Storage Card */}
-            <Card style={styles.storageCard}>
-              <View style={styles.storageHeader}>
-                <View style={styles.storageTitleRow}>
-                  <HardDrive size={20} color={colors.primary} />
-                  <Text style={[typography.labelLarge, { color: colors.text, marginLeft: 8 }]}>
-                    {primaryVolume.name}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.analyzerShortcut}
-                  onPress={() => navigation.navigate('StorageAnalyzerScreen')}
-                >
-                  <Text style={[typography.labelSmall, { color: colors.primary }]}>Analyze</Text>
-                  <ArrowUpRight size={14} color={colors.primary} />
-                </TouchableOpacity>
-              </View>
-
-              <ProgressBar
-                progress={storageUsagePercent}
-                color={storageUsagePercent > 0.85 ? colors.error : colors.primary}
-                style={{ marginTop: spacing.md }}
-              />
-
-              <View style={styles.storageStatsRow}>
-                <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
-                  Used:{' '}
-                  <Text style={{ fontWeight: '600', color: colors.text }}>
-                    {formatBytes(primaryVolume.usedBytes)}
-                  </Text>
-                </Text>
-                <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
-                  Free:{' '}
-                  <Text style={{ fontWeight: '600', color: colors.text }}>
-                    {formatBytes(primaryVolume.freeBytes)}
-                  </Text>
-                </Text>
-              </View>
-            </Card>
-
-            {/* Permission Banner if All Files Access is missing */}
-            {!hasAllFilesAccess && (
-              <View
-                style={[
-                  styles.permissionBanner,
-                  {
-                    backgroundColor: colors.primary + '15',
-                    borderColor: colors.primary,
-                  },
-                ]}
-              >
-                <ShieldAlert size={24} color={colors.primary} style={{ marginRight: spacing.sm }} />
-                <View style={{ flex: 1, marginRight: spacing.sm }}>
-                  <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700' }]}>
-                    All Files Access Required
-                  </Text>
-                  <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 2 }]}>
-                    Allow storage access to view PDF, TXT, HTML & document files.
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.grantButton, { backgroundColor: colors.primary }]}
-                  onPress={handleGrantPermission}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[typography.labelSmall, { color: '#FFFFFF', fontWeight: 'bold' }]}>
-                    Grant
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Pinned Favorites Quick Access Strip */}
-            {favoriteFiles.length > 0 && (
-              <View style={styles.favoritesSection}>
-                <View style={styles.favHeaderRow}>
-                  <Star size={16} color="#FFB300" fill="#FFB300" style={{ marginRight: 6 }} />
-                  <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700' }]}>
-                    Pinned Favorites ({favoriteFiles.length})
-                  </Text>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.favScroll}>
-                  {favoriteFiles.map((fav) => (
-                    <TouchableOpacity
-                      key={fav.id}
-                      style={[
-                        styles.favCard,
-                        { backgroundColor: colors.surfaceVariant, borderColor: colors.border },
-                      ]}
-                      onPress={() => handleFilePress(fav)}
-                      activeOpacity={0.7}
-                    >
-                      {fav.isDirectory ? (
-                        <Folder size={18} color={colors.primary} />
-                      ) : (
-                        <FileCode size={18} color="#00C853" />
-                      )}
-                      <Text
-                        style={[typography.labelSmall, { color: colors.text, marginLeft: 6, maxWidth: 100 }]}
-                        numberOfLines={1}
-                      >
-                        {fav.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-            )}
-
-            {/* Categories */}
-            <View style={styles.sectionTitleRow}>
-              <Text style={[typography.h3, { color: colors.text }]}>Categories</Text>
-            </View>
-
-            <CategoryChips
-              selectedCategory={activeCategory}
-              onSelectCategory={(cat) => {
-                if (cat === 'images') {
-                  navigation.navigate('ImagesGalleryScreen');
-                } else if (cat === 'videos') {
-                  navigation.navigate('VideosGalleryScreen');
-                } else if (cat === 'all') {
-                  setActiveCategory('all');
-                } else {
-                  navigation.navigate('CategoryFilesScreen', { category: cat });
-                }
-              }}
-            />
-
-            {/* Recent / Category Files Title */}
-            <View style={[styles.sectionTitleRow, { marginTop: spacing.lg }]}>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={[typography.h3, { color: colors.text }]}>
-                  {activeCategory === 'all' ? 'Recent Files' : `${activeCategory.toUpperCase()} Files`}
-                </Text>
-                <Text style={[typography.labelSmall, { color: colors.textMuted, marginLeft: 8 }]}>
-                  ({displayedFiles.length})
-                </Text>
-              </View>
-            </View>
-          </View>
-        }
-        renderItem={({ item }) => {
-          const isSelected = selectedFileIds.has(item.id);
-          if (viewMode === 'grid') {
-            return (
-              <FileGridItem
-                item={item}
-                onPress={handleFilePress}
-                onLongPress={handleFileLongPress}
-                onMorePress={handleMorePress}
-                isSelected={isSelected}
-                isSelectionMode={isSelectionMode}
-              />
-            );
-          }
-          return (
-            <FileItem
-              item={item}
-              onPress={handleFilePress}
-              onLongPress={handleFileLongPress}
-              onMorePress={handleMorePress}
-              isSelected={isSelected}
-              isSelectionMode={isSelectionMode}
-            />
-          );
-        }}
+        ListHeaderComponent={renderListHeader}
         ListEmptyComponent={
           !isLoading ? (
             <EmptyState
@@ -661,7 +759,7 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
           onShare={handleBatchShare}
           onCompress={() => setBatchCompressVisible(true)}
           onLockInVault={handleBatchLockInVault}
-          onSelectAll={selectAll}
+          onSelectAll={handleSelectAll}
           onInvertSelection={() => invertSelection(displayedFiles)}
           onRename={
             selectedFileIds.size === 1
@@ -737,8 +835,9 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         itemName={deleteTarget?.name}
         onDelete={async (permanent) => {
           if (deleteTarget) {
-            await deleteSingleWithChoice(deleteTarget.path, permanent);
+            const path = deleteTarget.path;
             setDeleteTarget(null);
+            await deleteSingleWithChoice(path, permanent);
           }
         }}
         onCancel={() => setDeleteTarget(null)}
@@ -749,13 +848,8 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         visible={confirmBatchDelete}
         itemCount={selectedFileIds.size}
         onDelete={async (permanent) => {
-          const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id));
-          for (const item of selected) {
-            await fileService.delete(item.path, !permanent);
-          }
           setConfirmBatchDelete(false);
-          clearSelection();
-          refresh();
+          await deleteSelectedWithChoice(permanent);
         }}
         onCancel={() => setConfirmBatchDelete(false)}
       />

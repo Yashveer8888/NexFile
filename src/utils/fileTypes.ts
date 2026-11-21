@@ -164,5 +164,16 @@ export function isAudioFile(item: { isDirectory?: boolean; extension?: string; m
   return false;
 }
 
+export function getMimeTypeFromExtension(fileName: string): string {
+  const ext = (fileName.includes('.') ? fileName.split('.').pop() : '')?.toLowerCase() || '';
+  if (IMAGE_EXTENSIONS.has(ext)) return `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+  if (VIDEO_EXTENSIONS.has(ext)) return `video/${ext}`;
+  if (AUDIO_EXTENSIONS.has(ext)) return `audio/${ext}`;
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'apk' || ext === 'xapk') return 'application/vnd.android.package-archive';
+  if (ext === 'zip') return 'application/zip';
+  return '*/*';
+}
+
 
 

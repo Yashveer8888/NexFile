@@ -12,6 +12,7 @@ import {
   Image,
   Alert,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -55,6 +56,7 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
   const {
     isUnlocked,
     isPinSet,
+    isHydrated,
     biometricEnabled,
     items,
     activeCategory,
@@ -645,7 +647,14 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
       )}
 
       {!isUnlocked ? (
-        !isPinSet ? (
+        !isHydrated ? (
+          <View style={[styles.lockScreen, { justifyContent: 'center', alignItems: 'center' }]}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={[typography.bodyMedium, { color: colors.textSecondary, marginTop: 16 }]}>
+              Securing Private Folder...
+            </Text>
+          </View>
+        ) : !isPinSet ? (
           /* =========================================================================
              1. SETUP PIN & FINGERPRINT SCREEN (Shown when password is not set yet)
              ========================================================================= */

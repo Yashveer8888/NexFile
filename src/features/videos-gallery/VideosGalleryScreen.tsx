@@ -63,8 +63,8 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const insets = useSafeAreaInsets();
   const { colors } = useThemeStore();
 
-  const [videos, setVideos] = useState<FileItem[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [videos, setVideos] = useState<FileItem[]>(() => fileService.getCachedVideos() || []);
+  const [isLoading, setIsLoading] = useState<boolean>(() => !fileService.hasCachedVideos());
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
 
   const {
@@ -94,6 +94,9 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const [pendingBatchVault, setPendingBatchVault] = useState(false);
 
   const handleLockInVault = async (item: FileItem) => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFileToVault } = useVaultStore.getState();
     if (!isPinSet) {
       setPendingVaultItem(item);
@@ -136,11 +139,21 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const activeResumeVideo = lastWatched?.file || (videos.length > 0 ? videos[0] : null);
   const activeResumePos = lastWatched?.file ? lastWatched.position : 0;
 
-  const loadVideos = async () => {
-    setIsLoading(true);
+  const loadVideos = async (force: boolean = false) => {
+    const hasCache = fileService.hasCachedVideos();
+    if (!hasCache || force) {
+      setIsLoading(true);
+    }
     try {
-      const all = await fileService.getAllVideos();
-      setVideos(all);
+      const all = await fileService.getAllVideos(force);
+      setVideos((prev) => {
+        if (!force && prev.length === all.length && prev.length > 0) {
+          if (prev[0]?.id === all[0]?.id && prev[0]?.lastModified === all[0]?.lastModified) {
+            return prev;
+          }
+        }
+        return all;
+      });
     } catch (e) {
       console.warn('Failed to load videos:', e);
     } finally {
@@ -149,7 +162,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   };
 
   useEffect(() => {
-    loadVideos();
+    loadVideos(false);
     useVideoResumeStore.getState().hydrate();
   }, []);
 
@@ -235,15 +248,20 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
 
   const handleBatchDelete = async (permanent: boolean) => {
     const selected = currentVideosList.filter((v) => selectedFileIds.has(v.id));
-    for (const item of selected) {
-      await fileService.delete(item.path, !permanent);
-    }
+    const selectedIds = new Set(selected.map((v) => v.id));
+    const selectedPaths = selected.map((v) => v.path);
+    // Instant optimistic update in 0ms
+    setVideos((prev) => prev.filter((v) => !selectedIds.has(v.id) && !selectedIds.has(v.path)));
     setConfirmBatchDelete(false);
     clearSelection();
-    loadVideos();
+    fileService.clearDirectoryCache();
+    Promise.all(selectedPaths.map((p) => fileService.delete(p, !permanent))).catch(console.warn);
   };
 
   const handleBatchLockInVault = async () => {
+    if (!useVaultStore.getState().isHydrated) {
+      await useVaultStore.getState().hydrate();
+    }
     const { isPinSet, importFilesToVault } = useVaultStore.getState();
     const selected = currentVideosList.filter((v) => selectedFileIds.has(v.id));
     if (selected.length === 0) return;
@@ -254,11 +272,14 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
       return;
     }
 
+    const selectedIds = new Set(selected.map((v) => v.id));
+    setVideos((prev) => prev.filter((v) => !selectedIds.has(v.id) && !selectedIds.has(v.path)));
+    clearSelection();
+    fileService.clearDirectoryCache();
+
     try {
       await importFilesToVault(selected.map((item) => item.path), '0000');
-      clearSelection();
       Alert.alert('Vault Secured', `${selected.length} video(s) locked in Private Folder.`);
-      loadVideos();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to lock videos in vault');
     }
@@ -560,7 +581,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.videosListContent}
             refreshControl={
-              <RefreshControl refreshing={isLoading} onRefresh={loadVideos} colors={[colors.primary]} />
+              <RefreshControl refreshing={isLoading} onRefresh={() => loadVideos(true)} colors={[colors.primary]} />
             }
             ListEmptyComponent={
               <EmptyState
@@ -578,7 +599,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.videosListContent}
             refreshControl={
-              <RefreshControl refreshing={isLoading} onRefresh={loadVideos} colors={[colors.primary]} />
+              <RefreshControl refreshing={isLoading} onRefresh={() => loadVideos(true)} colors={[colors.primary]} />
             }
             ListEmptyComponent={
               <EmptyState
@@ -596,7 +617,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
             keyExtractor={(item) => item.name}
             contentContainerStyle={styles.folderListContent}
             refreshControl={
-              <RefreshControl refreshing={isLoading} onRefresh={loadVideos} colors={[colors.primary]} />
+              <RefreshControl refreshing={isLoading} onRefresh={() => loadVideos(true)} colors={[colors.primary]} />
             }
             ListEmptyComponent={
               <EmptyState
@@ -649,13 +670,10 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         <FileActionSheet
           selectedCount={selectedFileIds.size}
           totalCount={currentVideosList.length}
+          hideMove={true}
           onCopy={() => {
             const selected = currentVideosList.filter((f) => selectedFileIds.has(f.id));
             setClipboard('copy', selected);
-          }}
-          onMove={() => {
-            const selected = currentVideosList.filter((f) => selectedFileIds.has(f.id));
-            setClipboard('move', selected);
           }}
           onDelete={() => setConfirmBatchDelete(true)}
           onShare={handleBatchShare}
@@ -769,11 +787,11 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
       <ItemActionModal
         visible={Boolean(actionModalItem)}
         item={actionModalItem}
+        hideMove={true}
         onClose={() => setActionModalItem(null)}
         onOpenWith={(item) => fileService.openWith(item.path)}
         onShare={(item) => fileService.shareFiles([item.path])}
         onCopy={(item) => setClipboard('copy', [item])}
-        onMove={(item) => setClipboard('move', [item])}
         onRename={(item) => setRenameItemTarget(item)}
         onCompress={(item) => setCompressTargetItem(item)}
         onToggleFavorite={(item) => {
@@ -801,9 +819,12 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         itemName={deleteTarget?.name}
         onDelete={async (permanent) => {
           if (deleteTarget) {
-            await deleteSingleWithChoice(deleteTarget.path, permanent);
+            const targetId = deleteTarget.id;
+            const targetPath = deleteTarget.path;
+            setVideos((prev) => prev.filter((v) => v.id !== targetId && v.path !== targetPath));
             setDeleteTarget(null);
-            loadVideos();
+            fileService.clearDirectoryCache();
+            fileService.delete(targetPath, !permanent).catch(console.warn);
           }
         }}
         onCancel={() => setDeleteTarget(null)}
@@ -838,9 +859,21 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         initialName={renameItemTarget?.name || ''}
         onRename={async (newName) => {
           if (renameItemTarget) {
-            await renameItem(renameItemTarget.path, newName);
+            const oldPath = renameItemTarget.path;
+            const oldId = renameItemTarget.id;
+            const parentDir = oldPath.substring(0, oldPath.lastIndexOf('/'));
+            const newPath = `${parentDir}/${newName}`;
+            const newExt = newName.includes('.') ? '.' + newName.split('.').pop() : '';
+            setVideos((prev) =>
+              prev.map((v) =>
+                v.id === oldId || v.path === oldPath
+                  ? { ...v, name: newName, path: newPath, id: newPath, extension: newExt }
+                  : v
+              )
+            );
             setRenameItemTarget(null);
-            loadVideos();
+            fileService.clearDirectoryCache();
+            fileService.rename(oldPath, newName).catch(console.warn);
           }
         }}
         onCancel={() => setRenameItemTarget(null)}
