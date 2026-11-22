@@ -1,12 +1,53 @@
-export type DocumentFilterType = 'original' | 'grayscale' | 'bw' | 'color';
+export type DocumentFilterType =
+  | 'original'
+  | 'magic_color'
+  | 'bw'
+  | 'grayscale'
+  | 'lighten'
+  | 'color';
+
+export type ScanningMode =
+  | 'document'
+  | 'idcard'
+  | 'book'
+  | 'whiteboard'
+  | 'qrcode';
+
+export type PageSize = 'A4' | 'LETTER' | 'LEGAL' | 'IDCARD';
+
+export type CompressionQuality = 'high' | 'medium' | 'low';
+
+export interface PageCropCoords {
+  tlX: number;
+  tlY: number;
+  trX: number;
+  trY: number;
+  brX: number;
+  brY: number;
+  blX: number;
+  blY: number;
+}
 
 export interface ScannedPage {
   id: string;
   uri: string;
   rotation: number; // 0, 90, 180, 270
   filter: DocumentFilterType;
+  brightness?: number; // -100 to +100
+  contrast?: number; // -100 to +100
+  crop?: PageCropCoords;
+  pageSize?: PageSize;
+  ocrText?: string;
   width?: number;
   height?: number;
+}
+
+export interface PdfAdvancedOptions {
+  pageSize?: PageSize;
+  watermarkText?: string;
+  signaturePath?: string;
+  signaturePage?: number;
+  quality?: number; // 10 to 100
 }
 
 export interface PdfDocumentInfo {
@@ -66,4 +107,3 @@ export interface ConversionTask {
   timestamp: number;
   size?: number;
 }
-

@@ -299,14 +299,14 @@ export const SearchScreen: React.FC<{ navigation: any; route: any }> = ({
                 title="No Files Found"
                 description={`No files matching "${query}" were found on storage.`}
               />
-            ) : null
+            ) : undefined
           ) : recentSearchedFiles.length === 0 ? (
             <EmptyState
               title="No Recent Search Files"
               description="Files you search for and open will appear here."
               icon={<FileSearch size={48} color={colors.textMuted} />}
             />
-          ) : null
+          ) : undefined
         }
       />
 
