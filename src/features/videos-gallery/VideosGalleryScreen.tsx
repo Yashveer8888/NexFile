@@ -26,6 +26,7 @@ import {
   Check,
   CheckSquare,
   RefreshCw,
+  SlidersHorizontal,
 } from 'lucide-react-native';
 import { Alert } from 'react-native';
 import { useThemeStore } from '../../app/store/useThemeStore';
@@ -33,9 +34,9 @@ import { useFileStore } from '../../app/store/useFileStore';
 import { useVaultStore } from '../../app/store/useVaultStore';
 import { typography } from '../../theme/typography';
 import { spacing, borderRadius } from '../../theme/spacing';
-import { FileItem } from '../../types/file';
+import { FileItem, SortField, SortOrder } from '../../types/file';
 import { fileService } from '../../services/filesystem/fileService';
-import { formatBytes, formatDate, extractParentFolder, formatDuration } from '../../utils/formatters';
+import { formatBytes, formatDate, extractParentFolder, formatDuration, formatVideoDuration, getVideoQuality, formatDateTime } from '../../utils/formatters';
 import { EmptyState } from '../../components/common/EmptyState';
 import { FileActionSheet } from '../../components/file/FileActionSheet';
 import { useVideoResumeStore } from '../../app/store/useVideoResumeStore';
@@ -46,6 +47,7 @@ import { CompressDialog } from '../../components/dialogs/CompressDialog';
 import { FileDetailsModal } from '../../components/dialogs/FileDetailsModal';
 import { ChecksumModal } from '../../components/dialogs/ChecksumModal';
 import { SetVaultPinModal } from '../../components/dialogs/SetVaultPinModal';
+import { SortFilterModal } from '../../components/file/SortFilterModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -92,6 +94,30 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const isSelectionMode = selectedFileIds.size > 0;
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   const [pendingBatchVault, setPendingBatchVault] = useState(false);
+
+  // Persistent Video Sorting Preference
+  const PREF_KEY_VIDEOS_SORT_BY = 'NEX_VIDEOS_SORT_BY';
+  const PREF_KEY_VIDEOS_SORT_ORDER = 'NEX_VIDEOS_SORT_ORDER';
+  const [sortBy, setSortBy] = useState<SortField>('date');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
+  const [sortModalVisible, setSortModalVisible] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      fileService.getPreference(PREF_KEY_VIDEOS_SORT_BY, 'date'),
+      fileService.getPreference(PREF_KEY_VIDEOS_SORT_ORDER, 'desc'),
+    ]).then(([savedSortBy, savedSortOrder]) => {
+      if (savedSortBy) setSortBy(savedSortBy as SortField);
+      if (savedSortOrder) setSortOrder(savedSortOrder as SortOrder);
+    });
+  }, []);
+
+  const handleSortChange = (field: SortField, order: SortOrder) => {
+    setSortBy(field);
+    setSortOrder(order);
+    fileService.savePreference(PREF_KEY_VIDEOS_SORT_BY, field);
+    fileService.savePreference(PREF_KEY_VIDEOS_SORT_ORDER, order);
+  };
 
   const handleLockInVault = async (item: FileItem) => {
     if (!useVaultStore.getState().isHydrated) {
@@ -211,11 +237,12 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   }, [selectedFolder, folderGroups]);
 
   const currentVideosList = useMemo(() => {
-    if (activeTab === 'folders' && selectedFolder && currentFolderData) {
-      return currentFolderData.videos;
-    }
-    return videos;
-  }, [activeTab, selectedFolder, currentFolderData, videos]);
+    const raw =
+      activeTab === 'folders' && selectedFolder && currentFolderData
+        ? currentFolderData.videos
+        : videos;
+    return fileService.sortFiles(raw, sortBy, sortOrder);
+  }, [activeTab, selectedFolder, currentFolderData, videos, sortBy, sortOrder]);
 
   const toggleSelect = (id: string) => {
     setSelectedFileIds((prev) => {
@@ -273,15 +300,14 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
     }
 
     const selectedIds = new Set(selected.map((v) => v.id));
-    setVideos((prev) => prev.filter((v) => !selectedIds.has(v.id) && !selectedIds.has(v.path)));
-    clearSelection();
-    fileService.clearDirectoryCache();
-
     try {
-      await importFilesToVault(selected.map((item) => item.path), '0000');
-      Alert.alert('Vault Secured', `${selected.length} video(s) locked in Private Folder.`);
+      await importFilesToVault(selected.map((item) => item.path));
+      setVideos((prev) => prev.filter((v) => !selectedIds.has(v.id) && !selectedIds.has(v.path)));
+      clearSelection();
+      fileService.clearDirectoryCache();
+      loadVideos();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to lock videos in vault');
+      Alert.alert('Vault Error', e?.message || 'Failed to lock videos in vault');
     }
   };
 
@@ -367,12 +393,17 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
   const renderVideoItem = ({ item }: { item: FileItem }) => {
     const entry = resumeMap[item.path];
     const pos = typeof entry === 'number' ? entry : entry?.position || 0;
-    const dur = typeof entry === 'object' ? entry?.duration || 0 : 0;
+    const resumeDur = typeof entry === 'object' ? entry?.duration || 0 : 0;
+    const videoDur = item.duration || resumeDur || 0;
     const completed = typeof entry === 'object' ? !!entry?.completed : false;
     const watched = typeof entry === 'object' ? !!entry?.watched : false;
     const isWatched = watched || completed || pos > 0;
-    const ratio = completed ? 1.0 : dur > 0 ? Math.min(1.0, pos / dur) : pos > 0 ? 0.35 : 0;
+    const ratio = completed ? 1.0 : videoDur > 0 ? Math.min(1.0, pos / videoDur) : pos > 0 ? 0.35 : 0;
     const isSelected = selectedFileIds.has(item.id);
+
+    const durStr = formatVideoDuration(videoDur);
+    const qualityBadge = getVideoQuality(item.width, item.height);
+    const dateTimeStr = formatDateTime(item.lastModified);
 
     return (
       <TouchableOpacity
@@ -405,7 +436,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
           </View>
         )}
 
-        {/* Thumbnail with Video Play Badge, Watched Progress Bar, or NEW Tag */}
+        {/* Thumbnail with Video Play Badge, Duration Badge, Watched Progress Bar, or NEW Tag */}
         <View style={styles.videoThumbBox}>
           <Image
             source={{ uri: item.thumbnailUri || `file://${item.path}` }}
@@ -415,6 +446,13 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
           <View style={styles.playOverlayBadge}>
             <Play size={16} color="#FFFFFF" fill="#FFFFFF" />
           </View>
+
+          {/* Duration Badge on thumbnail corner */}
+          {videoDur > 0 && (
+            <View style={styles.thumbDurationBadge}>
+              <Text style={styles.thumbDurationText}>{durStr}</Text>
+            </View>
+          )}
 
           {/* 1. Progress Bar under thumbnail for watched videos */}
           {isWatched && ratio > 0 && (
@@ -436,7 +474,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
           )}
         </View>
 
-        {/* Video Info - Bright text for unwatched, Light text for watched */}
+        {/* Video Info - Displays Name, Size, Duration, Quality Badge, and Date/Time */}
         <View style={styles.videoTileBody}>
           <Text
             style={[
@@ -447,18 +485,38 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
           >
             {item.name}
           </Text>
-          <View style={[styles.videoMetaRow, isWatched && { opacity: 0.6 }]}>
-            <Text style={[typography.labelSmall, { color: colors.textMuted }]}>
+
+          {/* Video Metadata: Size • Duration • Quality • Extension */}
+          <View style={[styles.videoMetaRow, isWatched && { opacity: 0.7 }]}>
+            <Text style={[typography.labelSmall, { color: colors.textSecondary }]}>
               {formatBytes(item.size)}
             </Text>
-            <Text style={[typography.labelSmall, { color: colors.textMuted }]}>
-              • {formatDate(item.lastModified)}
+
+            {videoDur > 0 && (
+              <>
+                <Text style={[typography.labelSmall, { color: colors.textMuted, marginHorizontal: 4 }]}>
+                  •
+                </Text>
+                <Text style={[typography.labelSmall, { color: colors.textSecondary }]}>
+                  {durStr}
+                </Text>
+              </>
+            )}
+            
+            {Boolean(qualityBadge) && (
+              <View style={[styles.qualityBadge, { backgroundColor: `${colors.primary}1A`, borderColor: `${colors.primary}50` }]}>
+                <Text style={[styles.qualityBadgeText, { color: colors.primary }]}>
+                  {qualityBadge}
+                </Text>
+              </View>
+            )}
+
+            <Text style={[typography.labelSmall, { color: colors.textMuted, marginHorizontal: 4 }]}>
+                  •
             </Text>
-            <View style={styles.formatTag}>
-              <Text style={styles.formatTagText}>
-                {(item.extension || 'MP4').toUpperCase()}
-              </Text>
-            </View>
+            <Text style={[typography.labelSmall, { color: colors.textSecondary }]}>
+              {dateTimeStr}
+            </Text>
           </View>
         </View>
 
@@ -546,20 +604,33 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
             </View>
 
             {(selectedFolder || activeTab === 'all') && currentVideosList.length > 0 && (
-              <TouchableOpacity
-                onPress={() => {
-                  if (currentVideosList.length > 0) {
-                    toggleSelect(currentVideosList[0].id);
-                  }
-                }}
-                style={[styles.selectHeaderBtn, { backgroundColor: colors.surfaceVariant }]}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <CheckSquare size={15} color={colors.primary} />
-                <Text style={[typography.labelSmall, { color: colors.primary, marginLeft: 4, fontWeight: '700' }]}>
-                  Select
-                </Text>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <TouchableOpacity
+                  onPress={() => setSortModalVisible(true)}
+                  style={[styles.selectHeaderBtn, { backgroundColor: colors.surfaceVariant }]}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <SlidersHorizontal size={14} color={colors.primary} />
+                  <Text style={[typography.labelSmall, { color: colors.primary, marginLeft: 4, fontWeight: '700' }]}>
+                    Sort
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    if (currentVideosList.length > 0) {
+                      toggleSelect(currentVideosList[0].id);
+                    }
+                  }}
+                  style={[styles.selectHeaderBtn, { backgroundColor: colors.surfaceVariant }]}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <CheckSquare size={14} color={colors.primary} />
+                  <Text style={[typography.labelSmall, { color: colors.primary, marginLeft: 4, fontWeight: '700' }]}>
+                    Select
+                  </Text>
+                </TouchableOpacity>
+              </View>
             )}
           </>
         )}
@@ -577,7 +648,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         ) : selectedFolder && currentFolderData ? (
           /* 1. Selected Folder Videos View */
           <FlatList
-            data={currentFolderData.videos}
+            data={currentVideosList}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.videosListContent}
             refreshControl={
@@ -595,7 +666,7 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
         ) : activeTab === 'all' ? (
           /* 2. All Videos Direct List View */
           <FlatList
-            data={videos}
+            data={currentVideosList}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.videosListContent}
             refreshControl={
@@ -895,6 +966,16 @@ export const VideosGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
           setPendingVaultItem(null);
         }}
       />
+
+      {/* Persistent Video Sort Filter Modal */}
+      <SortFilterModal
+        visible={sortModalVisible}
+        onClose={() => setSortModalVisible(false)}
+        title="Sort Videos"
+        sortBy={sortBy}
+        sortOrder={sortOrder}
+        onSortChange={handleSortChange}
+      />
     </View>
   );
 };
@@ -999,7 +1080,7 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
   },
   videoThumbBox: {
-    width: 72,
+    width: 78,
     height: 54,
     borderRadius: borderRadius.sm,
     overflow: 'hidden',
@@ -1015,12 +1096,27 @@ const styles = StyleSheet.create({
   },
   playOverlayBadge: {
     position: 'absolute',
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  thumbDurationBadge: {
+    position: 'absolute',
+    bottom: 3,
+    right: 3,
+    backgroundColor: 'rgba(0, 0, 0, 0.78)',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  thumbDurationText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   videoTileBody: {
     flex: 1,
@@ -1031,8 +1127,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 4,
   },
+  qualityBadge: {
+    marginLeft: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 0.8,
+  },
+  qualityBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
   formatTag: {
-    marginLeft: 8,
+    marginLeft: 6,
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     paddingHorizontal: 5,
     paddingVertical: 1,

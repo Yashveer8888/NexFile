@@ -22,6 +22,9 @@ import {
   ClipboardPaste,
   X,
   FileCheck,
+  Video,
+  SlidersHorizontal,
+  ArrowUpDown,
 } from 'lucide-react-native';
 import Svg, { Path } from 'react-native-svg';
 
@@ -87,9 +90,30 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
   const [isLoading, setIsLoading] = useState(() => !fileService.hasCachedCategory(category));
   const [selectedSubTab, setSelectedSubTab] = useState('All');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  // Persistent Category Sorting Preference
+  const PREF_KEY_CATEGORY_SORT_BY = 'NEX_CATEGORY_SORT_BY';
+  const PREF_KEY_CATEGORY_SORT_ORDER = 'NEX_CATEGORY_SORT_ORDER';
   const [sortBy, setSortBy] = useState<SortField>('date');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [showHidden, setShowHidden] = useState(false);
+
+  // Load saved category sort preference on mount
+  useEffect(() => {
+    Promise.all([
+      fileService.getPreference(PREF_KEY_CATEGORY_SORT_BY, 'date'),
+      fileService.getPreference(PREF_KEY_CATEGORY_SORT_ORDER, 'desc'),
+    ]).then(([savedSortBy, savedSortOrder]) => {
+      if (savedSortBy) setSortBy(savedSortBy as SortField);
+      if (savedSortOrder) setSortOrder(savedSortOrder as SortOrder);
+    });
+  }, []);
+
+  const handleSortChange = (field: SortField, order: SortOrder) => {
+    setSortBy(field);
+    setSortOrder(order);
+    fileService.savePreference(PREF_KEY_CATEGORY_SORT_BY, field);
+    fileService.savePreference(PREF_KEY_CATEGORY_SORT_ORDER, order);
+  };
 
   // Multi-select state
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
@@ -408,14 +432,12 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       setSetPinModalVisible(true);
       return;
     }
-    // Optimistic instant removal in 0ms
-    setRawFiles((prev) => prev.filter((f) => f.id !== item.id && f.path !== item.path));
-    fileService.clearDirectoryCache();
     try {
-      await importFileToVault(item.path, '0000');
-      Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
+      await importFileToVault(item.path);
+      setRawFiles((prev) => prev.filter((f) => f.id !== item.id && f.path !== item.path));
+      fileService.clearDirectoryCache();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to lock file in vault');
+      Alert.alert('Vault Error', e?.message || 'Failed to lock file in vault');
     }
   };
 
@@ -435,16 +457,14 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       setSetPinModalVisible(true);
       return;
     }
-    // Optimistic instant removal in 0ms
     const selectedIds = new Set(selected.map((f) => f.id));
-    setRawFiles((prev) => prev.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)));
-    clearSelection();
-    fileService.clearDirectoryCache();
     try {
-      await importFilesToVault(selected.map((item) => item.path), '0000');
-      Alert.alert('Vault Secured', `${selected.length} item(s) locked in Private Folder.`);
+      await importFilesToVault(selected.map((item) => item.path));
+      setRawFiles((prev) => prev.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)));
+      clearSelection();
+      fileService.clearDirectoryCache();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to lock items in vault');
+      Alert.alert('Vault Error', e?.message || 'Failed to lock items in vault');
     }
   };
 
@@ -455,23 +475,31 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       setPendingBatchVault(false);
       const selected = filteredFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
       const selectedIds = new Set(selected.map((f) => f.id));
-      setRawFiles((prev) => prev.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)));
-      clearSelection();
-      fileService.clearDirectoryCache();
-      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
-      Alert.alert('Passcode Set & Secured', `${selected.length} item(s) locked in Private Folder.`);
+      try {
+        await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
+        setRawFiles((prev) => prev.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)));
+        clearSelection();
+        fileService.clearDirectoryCache();
+      } catch (e: any) {
+        Alert.alert('Vault Error', e?.message || 'Failed to lock items in vault');
+      }
     } else if (pendingVaultItem) {
       const it = pendingVaultItem;
       setPendingVaultItem(null);
-      setRawFiles((prev) => prev.filter((f) => f.id !== it.id && f.path !== it.path));
-      fileService.clearDirectoryCache();
-      await useVaultStore.getState().importFileToVault(it.path, pin);
-      Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
+      try {
+        await useVaultStore.getState().importFileToVault(it.path, pin);
+        setRawFiles((prev) => prev.filter((f) => f.id !== it.id && f.path !== it.path));
+        fileService.clearDirectoryCache();
+      } catch (e: any) {
+        Alert.alert('Vault Error', e?.message || 'Failed to lock file in vault');
+      }
     }
   };
 
   const categoryMeta = useMemo(() => {
     switch (category) {
+      case 'videos':
+        return { title: 'Videos', subtitle: `${filteredFiles.length} Videos & Movies`, icon: Video, color: colors.videoColor };
       case 'audio':
         return { title: 'Audio Files', subtitle: `${filteredFiles.length} Tracks & Recordings`, icon: Music, color: colors.audioColor };
       case 'documents':
@@ -499,6 +527,8 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
         subtitle={categoryMeta.subtitle}
         showBack
         onBack={() => navigation.goBack()}
+        showFilter
+        onFilterPress={() => setFilterModalVisible(true)}
       />
 
       {/* Sub-Tabs / Filter Chips Bar */}
@@ -573,6 +603,36 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
           </View>
         </View>
       )}
+
+      {/* Category Files Toolbar: Item Count & Sort Button */}
+      <View style={[styles.toolbarContainer, { borderBottomColor: colors.border }]}>
+        <Text style={[typography.labelMedium, { color: colors.textSecondary }]}>
+          {filteredFiles.length} {filteredFiles.length === 1 ? 'item' : 'items'}
+        </Text>
+
+        <TouchableOpacity
+          style={[styles.sortButton, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}
+          onPress={() => setFilterModalVisible(true)}
+          activeOpacity={0.7}
+        >
+          <SlidersHorizontal size={14} color={colors.primary} />
+          <Text style={[typography.labelSmall, { color: colors.text, marginLeft: 6, fontWeight: '600' }]}>
+            {sortBy === 'date'
+              ? sortOrder === 'desc'
+                ? 'Newest'
+                : 'Oldest'
+              : sortBy === 'name'
+              ? sortOrder === 'asc'
+                ? 'Name (A-Z)'
+                : 'Name (Z-A)'
+              : sortBy === 'size'
+              ? sortOrder === 'desc'
+                ? 'Largest'
+                : 'Smallest'
+              : 'Type'}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Files List / Grid */}
       <FlatList
@@ -806,12 +866,10 @@ export const CategoryFilesScreen: React.FC<{ navigation: any }> = ({ navigation 
       <SortFilterModal
         visible={filterModalVisible}
         onClose={() => setFilterModalVisible(false)}
+        title={`Sort ${categoryMeta.title}`}
         sortBy={sortBy}
         sortOrder={sortOrder}
-        onSortChange={(field, order) => {
-          setSortBy(field);
-          setSortOrder(order);
-        }}
+        onSortChange={handleSortChange}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         showHidden={showHidden}
@@ -929,5 +987,21 @@ const styles = StyleSheet.create({
   },
   cancelPasteBtn: {
     padding: spacing.xs,
+  },
+  toolbarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.base,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  sortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm + 4,
+    paddingVertical: spacing.xs + 3,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
   },
 });

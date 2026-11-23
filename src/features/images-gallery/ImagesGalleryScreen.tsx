@@ -380,15 +380,14 @@ export const ImagesGalleryScreen: React.FC<{ navigation: any; route?: any }> = (
     }
 
     const selectedIds = new Set(selected.map((f) => f.id));
-    setImages((prev) => prev.filter((img) => !selectedIds.has(img.id) && !selectedIds.has(img.path)));
-    clearSelection();
-    fileService.clearDirectoryCache();
-
     try {
-      await importFilesToVault(selected.map((item) => item.path), '0000');
-      Alert.alert('Vault Secured', `${selected.length} image(s) locked in Private Folder.`);
+      await importFilesToVault(selected.map((item) => item.path));
+      setImages((prev) => prev.filter((img) => !selectedIds.has(img.id) && !selectedIds.has(img.path)));
+      clearSelection();
+      fileService.clearDirectoryCache();
+      loadImages(true);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to lock images in vault');
+      Alert.alert('Vault Error', e?.message || 'Failed to lock images in vault');
     }
   };
 

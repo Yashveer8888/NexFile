@@ -34,6 +34,8 @@ import {
   Play,
   MoreVertical,
   Eye,
+  SlidersHorizontal,
+  ArrowUpDown,
 } from 'lucide-react-native';
 import { useThemeStore } from '../../app/store/useThemeStore';
 import { useVaultStore } from '../../app/store/useVaultStore';
@@ -46,9 +48,10 @@ import { Header } from '../../components/common/Header';
 import { Card } from '../../components/common/Card';
 import { Button } from '../../components/common/Button';
 import { Badge } from '../../components/common/Badge';
-import { formatBytes, formatDate } from '../../utils/formatters';
+import { formatBytes, formatDate, formatVideoDuration, getVideoQuality, formatDateTime } from '../../utils/formatters';
 import { VaultItem } from '../../types/vault';
-import { FileItem } from '../../types/file';
+import { FileItem, SortField, SortOrder } from '../../types/file';
+import { SortFilterModal } from '../../components/file/SortFilterModal';
 
 export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
@@ -97,6 +100,87 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
   const [changePinError, setChangePinError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [actionModalItem, setActionModalItem] = useState<VaultItem | null>(null);
+
+  // Sorting state with persistent preferences
+  const PREF_KEY_VAULT_SORT_BY = 'NEX_VAULT_SORT_BY';
+  const PREF_KEY_VAULT_SORT_ORDER = 'NEX_VAULT_SORT_ORDER';
+  const [sortBy, setSortBy] = useState<SortField>('date');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
+  const [sortModalVisible, setSortModalVisible] = useState(false);
+
+  // Load saved sorting preference on mount
+  useEffect(() => {
+    Promise.all([
+      fileService.getPreference(PREF_KEY_VAULT_SORT_BY, 'date'),
+      fileService.getPreference(PREF_KEY_VAULT_SORT_ORDER, 'desc'),
+    ]).then(([savedSortBy, savedSortOrder]) => {
+      if (savedSortBy) setSortBy(savedSortBy as SortField);
+      if (savedSortOrder) setSortOrder(savedSortOrder as SortOrder);
+    });
+  }, []);
+
+  const handleSortChange = (field: SortField, order: SortOrder) => {
+    setSortBy(field);
+    setSortOrder(order);
+    fileService.savePreference(PREF_KEY_VAULT_SORT_BY, field);
+    fileService.savePreference(PREF_KEY_VAULT_SORT_ORDER, order);
+  };
+
+  // Enrich video items in vault with duration/width/height if missing
+  useEffect(() => {
+    if (isUnlocked && items.length > 0) {
+      const missingMeta = items.filter(
+        (i) =>
+          (i.category === 'videos' ||
+            ['mp4', 'mkv', 'webm', '3gp', 'avi', 'mov'].includes(
+              i.name.split('.').pop()?.toLowerCase() || ''
+            )) &&
+          !i.duration
+      );
+      if (missingMeta.length > 0) {
+        Promise.all(
+          missingMeta.slice(0, 15).map(async (v) => {
+            const fp = getItemFilePath(v);
+            const meta = await fileService.getVideoMetadata(fp);
+            return { id: v.id, ...meta };
+          })
+        ).then((results) => {
+          const valid = results.filter((r) => r.duration > 0);
+          if (valid.length > 0) {
+            const metaMap = new Map(valid.map((r) => [r.id, r]));
+            const updated = items.map((it) => {
+              const m = metaMap.get(it.id);
+              if (m) {
+                return { ...it, duration: m.duration, width: m.width, height: m.height };
+              }
+              return it;
+            });
+            useVaultStore.setState({ items: updated });
+            fileService
+              .savePreference('NEX_VAULT_ITEMS_LIST', JSON.stringify(updated))
+              .catch(() => {});
+          }
+        });
+      }
+    }
+  }, [isUnlocked, items]);
+
+  const getSortLabel = (field: SortField, order: SortOrder) => {
+    switch (field) {
+      case 'name':
+        return order === 'asc' ? 'Name (A-Z)' : 'Name (Z-A)';
+      case 'date':
+        return order === 'desc' ? 'Newest' : 'Oldest';
+      case 'size':
+        return order === 'desc' ? 'Largest' : 'Smallest';
+      case 'duration':
+        return order === 'desc' ? 'Duration (Longest)' : 'Duration (Shortest)';
+      case 'type':
+        return order === 'asc' ? 'Type (A-Z)' : 'Type (Z-A)';
+      default:
+        return 'Sort';
+    }
+  };
 
   // Biometric Unlock Trigger
   const handleBiometricUnlock = useCallback(async () => {
@@ -379,9 +463,9 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
 
   const handleImportFile = async (filePath: string, fileName: string) => {
     try {
-      await importFileToVault(filePath, '0000');
       setImportModalVisible(false);
-      setStatusMessage(`Encrypted & Moved to Private Folder: ${fileName}`);
+      await importFileToVault(filePath);
+      setStatusMessage(`Safely Moved to Private Folder: ${fileName}`);
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (e: any) {
       console.warn('Import error:', e);
@@ -390,17 +474,45 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
 
   const handleExport = async (item: VaultItem) => {
     try {
-      const exportedPath = await exportFileFromVault(item.id, '/storage/emulated/0/Download', '0000');
-      setStatusMessage(`Decrypted & Exported to Downloads: ${item.name}`);
+      const exportedPath = await exportFileFromVault(item.id, '/storage/emulated/0/Download');
+      setStatusMessage(`Exported to Downloads: ${item.name}`);
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (e) {
       console.warn('Export error:', e);
     }
   };
 
-  const filteredItems = activeCategory === 'all'
-    ? items
-    : items.filter((i) => i.category === activeCategory);
+  const filteredItems = React.useMemo(() => {
+    const list =
+      activeCategory === 'all'
+        ? items
+        : items.filter((i) => i.category === activeCategory);
+
+    return [...list].sort((a, b) => {
+      let comp = 0;
+      switch (sortBy) {
+        case 'name':
+          comp = (a.name || '').localeCompare(b.name || '');
+          break;
+        case 'date':
+          comp = (a.encryptedAt || 0) - (b.encryptedAt || 0);
+          break;
+        case 'size':
+          comp = (a.size || 0) - (b.size || 0);
+          break;
+        case 'duration':
+          comp = (a.duration || 0) - (b.duration || 0);
+          break;
+        case 'type': {
+          const extA = (a.name || '').split('.').pop()?.toLowerCase() || '';
+          const extB = (b.name || '').split('.').pop()?.toLowerCase() || '';
+          comp = extA.localeCompare(extB);
+          break;
+        }
+      }
+      return sortOrder === 'asc' ? comp : -comp;
+    });
+  }, [items, activeCategory, sortBy, sortOrder]);
 
   const toggleSelect = (id: string) => {
     setSelectedFileIds((prev) => {
@@ -909,7 +1021,28 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
             <Text style={[typography.h3, { color: colors.text }]}>
               Private Files ({filteredItems.length})
             </Text>
-            
+
+            <TouchableOpacity
+              style={[
+                styles.sortButton,
+                {
+                  backgroundColor: colors.surfaceVariant,
+                  borderColor: colors.border,
+                },
+              ]}
+              onPress={() => setSortModalVisible(true)}
+              activeOpacity={0.7}
+            >
+              <SlidersHorizontal size={14} color={colors.primary} />
+              <Text
+                style={[
+                  typography.labelSmall,
+                  { color: colors.text, marginLeft: 6, fontWeight: '600' },
+                ]}
+              >
+                {getSortLabel(sortBy, sortOrder)}
+              </Text>
+            </TouchableOpacity>
           </View>
 
           {filteredItems.length === 0 ? (
@@ -939,6 +1072,11 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
               const ext = item.name.split('.').pop()?.toLowerCase() || '';
               const isImg = item.category === 'images' || ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext);
               const isVid = item.category === 'videos' || ['mp4', 'mkv', 'webm', '3gp', 'avi', 'mov'].includes(ext);
+
+              const videoDur = item.duration || 0;
+              const durStr = formatVideoDuration(videoDur);
+              const qualityBadge = getVideoQuality(item.width, item.height);
+              const dateTimeStr = formatDateTime(item.encryptedAt);
 
               return (
                 <TouchableOpacity
@@ -984,7 +1122,7 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
                         </View>
                       )}
 
-                      <View style={styles.vaultThumbWrapper}>
+                      <View style={[styles.vaultThumbWrapper, isVid && { width: 56 }]}>
                         {isImg ? (
                           <Image
                             source={{ uri: `file://${filePath}` }}
@@ -992,15 +1130,20 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
                             resizeMode="cover"
                           />
                         ) : isVid ? (
-                          <View style={styles.vaultVidWrapper}>
+                          <View style={[styles.vaultVidWrapper, { width: 56 }]}>
                             <Image
                               source={{ uri: `file://${filePath}` }}
-                              style={styles.vaultMediaThumb}
+                              style={[styles.vaultMediaThumb, { width: 56 }]}
                               resizeMode="cover"
                             />
                             <View style={styles.vaultPlayOverlayBadge}>
-                              <Play size={14} color="#FFFFFF" fill="#FFFFFF" />
+                              <Play size={13} color="#FFFFFF" fill="#FFFFFF" />
                             </View>
+                            {videoDur > 0 && (
+                              <View style={styles.vaultDurationBadge}>
+                                <Text style={styles.vaultDurationText}>{durStr}</Text>
+                              </View>
+                            )}
                           </View>
                         ) : (
                           <View
@@ -1024,9 +1167,37 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
                         <Text style={[typography.labelLarge, { color: colors.text }]} numberOfLines={1}>
                           {item.name}
                         </Text>
-                        <Text style={[typography.bodySmall, { color: colors.textMuted, marginTop: 2 }]} numberOfLines={1}>
-                          {formatBytes(item.size)} • {item.originalPath ? item.originalPath.split('/').slice(-3, -1).join('/') : formatDate(item.encryptedAt)}
-                        </Text>
+                        {isVid ? (
+                          <View style={{ marginTop: 2 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                                {formatBytes(item.size)}
+                              </Text>
+                              {videoDur > 0 && (
+                                <>
+                                  <Text style={[typography.bodySmall, { color: colors.textMuted, marginHorizontal: 4 }]}>•</Text>
+                                  <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                                    {durStr}
+                                  </Text>
+                                </>
+                              )}
+                              {Boolean(qualityBadge) && (
+                                <View style={[styles.vaultQualityBadge, { backgroundColor: `${colors.primary}1A`, borderColor: `${colors.primary}50` }]}>
+                                  <Text style={[styles.vaultQualityBadgeText, { color: colors.primary }]}>
+                                    {qualityBadge}
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                            <Text style={[typography.bodySmall, { color: colors.textMuted, fontSize: 11, marginTop: 2 }]} numberOfLines={1}>
+                              {dateTimeStr}
+                            </Text>
+                          </View>
+                        ) : (
+                          <Text style={[typography.bodySmall, { color: colors.textMuted, marginTop: 2 }]} numberOfLines={1}>
+                            {formatBytes(item.size)} • {item.originalPath ? item.originalPath.split('/').slice(-3, -1).join('/') : formatDate(item.encryptedAt)}
+                          </Text>
+                        )}
                       </View>
 
                       {!isSelectionMode && (
@@ -1353,6 +1524,16 @@ export const PrivateVaultScreen: React.FC<{ navigation: any }> = ({ navigation }
           </View>
         </View>
       </Modal>
+
+      {/* Persistent Vault Sort Filter Modal */}
+      <SortFilterModal
+        visible={sortModalVisible}
+        onClose={() => setSortModalVisible(false)}
+        title="Sort Private Files"
+        sortBy={sortBy}
+        sortOrder={sortOrder}
+        onSortChange={handleSortChange}
+      />
     </View>
   );
 };
@@ -1456,6 +1637,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: spacing.md,
   },
+  sortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm + 4,
+    paddingVertical: spacing.xs + 3,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+  },
   vaultItemCard: {
     marginBottom: spacing.sm,
     padding: spacing.md,
@@ -1493,6 +1682,32 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  vaultDurationBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    backgroundColor: 'rgba(0, 0, 0, 0.78)',
+    paddingHorizontal: 3,
+    paddingVertical: 0.5,
+    borderRadius: 2.5,
+  },
+  vaultDurationText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    fontWeight: '700',
+  },
+  vaultQualityBadge: {
+    marginLeft: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 0.8,
+  },
+  vaultQualityBadgeText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    letterSpacing: 0.2,
   },
   vaultDocThumb: {
     width: 48,

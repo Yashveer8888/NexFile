@@ -5,6 +5,7 @@ import { useThemeStore } from './src/app/store/useThemeStore';
 import { RootNavigator } from './src/app/navigation/RootNavigator';
 import { requestStoragePermissions } from './src/services/permissions/permissionsService';
 import { NativeBridgeService } from './src/services/filesystem/nativeBridge';
+import { VaultProgressModal } from './src/components/dialogs/VaultProgressModal';
 
 function App(): React.JSX.Element {
   const { mode } = useThemeStore();
@@ -22,6 +23,7 @@ function App(): React.JSX.Element {
     <SafeAreaProvider>
       <StatusBar hidden={true} barStyle={barStyle} />
       <RootNavigator />
+      <VaultProgressModal />
     </SafeAreaProvider>
   );
 }

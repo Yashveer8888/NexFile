@@ -311,6 +311,9 @@ class FileService {
         case 'size':
           comparison = a.size - b.size;
           break;
+        case 'duration':
+          comparison = (a.duration || 0) - (b.duration || 0);
+          break;
         case 'type': {
           const extA = (a.extension || '').toLowerCase();
           const extB = (b.extension || '').toLowerCase();
@@ -426,6 +429,10 @@ class FileService {
 
   async getImageDimensions(filePath: string): Promise<{ width: number; height: number; mimeType?: string } | null> {
     return await NativeBridgeService.getImageDimensions(filePath);
+  }
+
+  async getVideoMetadata(filePath: string): Promise<{ duration: number; width: number; height: number }> {
+    return await NativeBridgeService.getVideoMetadata(filePath);
   }
 
   async openFile(filePath: string, mimeType?: string): Promise<boolean> {

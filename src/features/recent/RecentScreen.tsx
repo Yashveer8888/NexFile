@@ -392,17 +392,15 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setSetPinModalVisible(true);
       return;
     }
-    // Optimistic instant UI update in 0ms
-    useFileStore.setState((state) => ({
-      recentFiles: state.recentFiles.filter((f) => f.id !== item.id),
-      files: state.files.filter((f) => f.id !== item.id),
-    }));
-    fileService.clearDirectoryCache();
     try {
-      await importFileToVault(item.path, '0000');
-      Alert.alert('Vault Secured', `"${item.name}" locked in Private Folder.`);
+      await importFileToVault(item.path);
+      useFileStore.setState((state) => ({
+        recentFiles: state.recentFiles.filter((f) => f.id !== item.id && f.path !== item.path),
+        files: state.files.filter((f) => f.id !== item.id && f.path !== item.path),
+      }));
+      fileService.clearDirectoryCache();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to lock file in vault');
+      Alert.alert('Vault Error', e?.message || 'Failed to lock file in vault');
     }
   };
 
@@ -422,19 +420,18 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setSetPinModalVisible(true);
       return;
     }
-    // Optimistic instant UI update in 0ms
     const selectedIds = new Set(selected.map((f) => f.id));
-    useFileStore.setState((state) => ({
-      recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id)),
-      files: state.files.filter((f) => !selectedIds.has(f.id)),
-      selectedFileIds: new Set(),
-    }));
-    fileService.clearDirectoryCache();
     try {
-      await importFilesToVault(selected.map((item) => item.path), '0000');
-      Alert.alert('Vault Secured', `${selected.length} item(s) locked in your Private Vault.`);
+      await importFilesToVault(selected.map((item) => item.path));
+      useFileStore.setState((state) => ({
+        recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+        files: state.files.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+        selectedFileIds: new Set(),
+      }));
+      clearSelection();
+      fileService.clearDirectoryCache();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to lock items in vault');
+      Alert.alert('Vault Error', e?.message || 'Failed to lock items in vault');
     }
   };
 
@@ -445,24 +442,31 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setPendingBatchVault(false);
       const selected = displayedFiles.filter((f) => selectedFileIds.has(f.id) && !f.isDirectory);
       const selectedIds = new Set(selected.map((f) => f.id));
-      useFileStore.setState((state) => ({
-        recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id)),
-        files: state.files.filter((f) => !selectedIds.has(f.id)),
-        selectedFileIds: new Set(),
-      }));
-      fileService.clearDirectoryCache();
-      await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
-      Alert.alert('Passcode Set & Secured', `${selected.length} item(s) locked in Private Folder.`);
+      try {
+        await useVaultStore.getState().importFilesToVault(selected.map((item) => item.path), pin);
+        useFileStore.setState((state) => ({
+          recentFiles: state.recentFiles.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+          files: state.files.filter((f) => !selectedIds.has(f.id) && !selectedIds.has(f.path)),
+          selectedFileIds: new Set(),
+        }));
+        clearSelection();
+        fileService.clearDirectoryCache();
+      } catch (e: any) {
+        Alert.alert('Vault Error', e?.message || 'Failed to lock items in vault');
+      }
     } else if (pendingVaultItem) {
       const it = pendingVaultItem;
       setPendingVaultItem(null);
-      useFileStore.setState((state) => ({
-        recentFiles: state.recentFiles.filter((f) => f.id !== it.id),
-        files: state.files.filter((f) => f.id !== it.id),
-      }));
-      fileService.clearDirectoryCache();
-      await useVaultStore.getState().importFileToVault(it.path, pin);
-      Alert.alert('Passcode Set & Secured', `"${it.name}" locked in Private Folder.`);
+      try {
+        await useVaultStore.getState().importFileToVault(it.path, pin);
+        useFileStore.setState((state) => ({
+          recentFiles: state.recentFiles.filter((f) => f.id !== it.id && f.path !== it.path),
+          files: state.files.filter((f) => f.id !== it.id && f.path !== it.path),
+        }));
+        fileService.clearDirectoryCache();
+      } catch (e: any) {
+        Alert.alert('Vault Error', e?.message || 'Failed to lock file in vault');
+      }
     }
   };
 

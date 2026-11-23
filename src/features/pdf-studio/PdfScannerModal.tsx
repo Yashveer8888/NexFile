@@ -74,6 +74,7 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
     scannedPages,
     activePageIndex,
     addScannedPage,
+    addScannedPages,
     removeScannedPage,
     rotateScannedPage,
     setPageFilter,
@@ -137,12 +138,26 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
 
   const activePage = scannedPages[activePageIndex] || scannedPages[0];
 
-  // Initialize title on open
+  const hasAutoLaunchedRef = useRef(false);
+
+  // Initialize title and auto-launch in-app batch camera on open
   useEffect(() => {
-    if (visible && scannedPages.length === 0) {
-      const today = new Date();
-      const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-      setDocumentTitle(`Scanned_Doc_${dateStr}`);
+    if (visible) {
+      if (scannedPages.length === 0) {
+        const today = new Date();
+        const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+        setDocumentTitle(`Scanned_Doc_${dateStr}`);
+
+        if (!hasAutoLaunchedRef.current) {
+          hasAutoLaunchedRef.current = true;
+          // Launch in-app document scanner camera directly
+          setTimeout(() => {
+            handleCameraCapture('batch');
+          }, 200);
+        }
+      }
+    } else {
+      hasAutoLaunchedRef.current = false;
     }
   }, [visible]);
 
@@ -157,22 +172,30 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
     }
   }, [activePageIndex, activePage?.id]);
 
-  // REAL CAMERA CAPTURE
-  const handleCameraCapture = async () => {
+  // IN-APP CAMERA & BATCH SCAN CAPTURE
+  const handleCameraCapture = async (overrideMode?: 'batch' | 'single' | 'idcard') => {
     try {
-      const capturedPath = await pdfService.launchCameraScan();
-      if (capturedPath) {
-        addScannedPage(capturedPath);
+      const mode = overrideMode || (activeMode === 'idcard' ? 'idcard' : 'batch');
+      const isInitialLaunch = scannedPages.length === 0;
+      const capturedPaths = await pdfService.launchBatchScanner({ mode });
+      if (capturedPaths && capturedPaths.length > 0) {
+        if (isInitialLaunch) {
+          clearScanner();
+        }
+        addScannedPages(capturedPaths);
 
         // If in QR/Barcode mode, automatically detect barcode on the photo
         if (activeMode === 'qrcode') {
-          const barcode = await pdfService.scanQrOrBarcode(capturedPath);
+          const barcode = await pdfService.scanQrOrBarcode(capturedPaths[0]);
           if (barcode) {
             setQrResult(barcode);
           } else {
             ToastAndroid.show('No QR code or Barcode detected in this photo', ToastAndroid.LONG);
           }
         }
+      } else if (isInitialLaunch && (!capturedPaths || capturedPaths.length === 0)) {
+        // User backed out or tapped Discard on empty scanner
+        onClose();
       }
     } catch (e: any) {
       console.warn('Camera capture error:', e);
@@ -428,12 +451,38 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
                 </View>
               )}
 
-              {/* Top Page Info & Mode Badge */}
+              {/* Top Page Info & Mode Badge with Reorder Controls */}
               <View style={styles.pageTopBadges}>
-                <View style={[styles.badgePill, { backgroundColor: colors.overlay }]}>
+                <View style={[styles.badgePill, { backgroundColor: colors.overlay, flexDirection: 'row', alignItems: 'center' }]}>
+                  {activePageIndex > 0 && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        reorderPages(activePageIndex, activePageIndex - 1);
+                        usePdfStore.setState({ activePageIndex: activePageIndex - 1 });
+                        ToastAndroid.show('Page moved left', ToastAndroid.SHORT);
+                      }}
+                      style={{ paddingHorizontal: 6 }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <ChevronLeft size={16} color="#60A5FA" />
+                    </TouchableOpacity>
+                  )}
                   <Text style={[typography.labelSmall, { color: '#FFFFFF', fontWeight: '700' }]}>
                     Page {activePageIndex + 1} of {scannedPages.length}
                   </Text>
+                  {activePageIndex < scannedPages.length - 1 && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        reorderPages(activePageIndex, activePageIndex + 1);
+                        usePdfStore.setState({ activePageIndex: activePageIndex + 1 });
+                        ToastAndroid.show('Page moved right', ToastAndroid.SHORT);
+                      }}
+                      style={{ paddingHorizontal: 6 }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <ChevronRight size={16} color="#60A5FA" />
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 {activeMode === 'idcard' && (
@@ -468,7 +517,7 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
               <View style={styles.emptyActionButtons}>
                 <TouchableOpacity
                   style={[styles.bigActionBtn, { backgroundColor: colors.primary }]}
-                  onPress={handleCameraCapture}
+                  onPress={() => handleCameraCapture()}
                   activeOpacity={0.8}
                 >
                   <Camera size={22} color="#FFFFFF" style={{ marginRight: 8 }} />
@@ -549,7 +598,7 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
               {/* Add More Pages Buttons */}
               <TouchableOpacity
                 style={[styles.addPageThumb, { borderColor: colors.primary, backgroundColor: colors.primaryLight }]}
-                onPress={handleCameraCapture}
+                onPress={() => handleCameraCapture('batch')}
               >
                 <Camera size={18} color={colors.primary} />
                 <Text style={[typography.labelSmall, { color: colors.primary, fontSize: 10, marginTop: 2 }]}>

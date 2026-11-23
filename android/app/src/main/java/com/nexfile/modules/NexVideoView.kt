@@ -174,6 +174,19 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
 
             mp.setOnSeekCompleteListener {
                 isSeeking = false
+                try {
+                    if (mediaPlayer != null && isPrepared) {
+                        val currentPos = mediaPlayer!!.currentPosition
+                        val duration = mediaPlayer!!.duration
+                        val event = Arguments.createMap().apply {
+                            putDouble("currentTime", currentPos.toDouble() / 1000.0)
+                            putDouble("duration", duration.toDouble() / 1000.0)
+                        }
+                        (context as? ReactContext)
+                            ?.getJSModule(RCTEventEmitter::class.java)
+                            ?.receiveEvent(id, "topVideoProgress", event)
+                    }
+                } catch (_: Exception) {}
             }
 
             mp.setOnCompletionListener {
@@ -217,13 +230,18 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
         } catch (_: Exception) {}
     }
 
+    private var lastSeekMs: Long = -1L
+
     fun seekTo(seconds: Double) {
+        if (seconds < 0) return
+        val ms = (seconds * 1000).toLong()
+        if (ms == lastSeekMs && isSeeking) return
+        lastSeekMs = ms
         try {
             if (mediaPlayer != null && isPrepared) {
                 isSeeking = true
-                val ms = (seconds * 1000).toLong()
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    mediaPlayer!!.seekTo(ms, MediaPlayer.SEEK_CLOSEST)
+                    mediaPlayer!!.seekTo(ms, MediaPlayer.SEEK_CLOSEST_SYNC)
                 } else {
                     mediaPlayer!!.seekTo(ms.toInt())
                 }

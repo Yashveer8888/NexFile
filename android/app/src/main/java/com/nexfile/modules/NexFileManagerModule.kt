@@ -83,7 +83,10 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
         val lastModified: Long,
         val mimeType: String,
         val parentFolder: String,
-        val extension: String
+        val extension: String,
+        var duration: Long = 0L,
+        var width: Int = 0,
+        var height: Int = 0
     )
 
     @ReactMethod
@@ -590,6 +593,39 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                 val videoMap = LinkedHashMap<String, FileInfoEntry>()
                 val vidExts = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "flv", "ts", "m4v", "wmv", "mpg", "mpeg")
 
+                // Step 0: Pre-fetch video metadata (duration, width, height) from MediaStore
+                val mediaStoreMeta = HashMap<String, Triple<Long, Int, Int>>()
+                try {
+                    val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    val projection = arrayOf(
+                        MediaStore.Video.Media.DATA,
+                        MediaStore.Video.Media.DURATION,
+                        MediaStore.Video.Media.WIDTH,
+                        MediaStore.Video.Media.HEIGHT
+                    )
+                    val cursor = reactContext.contentResolver.query(uri, projection, null, null, null)
+                    cursor?.use {
+                        val dataIndex = it.getColumnIndex(MediaStore.Video.Media.DATA)
+                        val durIndex = it.getColumnIndex(MediaStore.Video.Media.DURATION)
+                        val widthIndex = it.getColumnIndex(MediaStore.Video.Media.WIDTH)
+                        val heightIndex = it.getColumnIndex(MediaStore.Video.Media.HEIGHT)
+
+                        while (it.moveToNext()) {
+                            val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
+                            if (!filePath.isNullOrEmpty()) {
+                                val dur = if (durIndex != -1) it.getLong(durIndex) else 0L
+                                val w = if (widthIndex != -1) it.getInt(widthIndex) else 0
+                                val h = if (heightIndex != -1) it.getInt(heightIndex) else 0
+                                mediaStoreMeta[filePath] = Triple(dur, w, h)
+                                try {
+                                    val canonical = File(filePath).canonicalPath
+                                    mediaStoreMeta[canonical] = Triple(dur, w, h)
+                                } catch (ignored: Exception) {}
+                            }
+                        }
+                    }
+                } catch (ignored: Exception) {}
+
                 // 1. Direct targeted deep scan of major video storage locations:
                 val storageRoot = Environment.getExternalStorageDirectory()
                 if (storageRoot != null && storageRoot.exists()) {
@@ -625,6 +661,16 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                     scanVideosInDirectory(storageRoot, 0, 4, vidExts, videoMap)
                 }
 
+                // Attach pre-fetched metadata to files found via filesystem scan
+                for ((canonical, entry) in videoMap) {
+                    val meta = mediaStoreMeta[canonical] ?: mediaStoreMeta[entry.file.absolutePath]
+                    if (meta != null) {
+                        entry.duration = meta.first
+                        entry.width = meta.second
+                        entry.height = meta.third
+                    }
+                }
+
                 // 2. Query MediaStore Videos to supplement any indexed items
                 try {
                     val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
@@ -634,7 +680,10 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                         MediaStore.Video.Media.SIZE,
                         MediaStore.Video.Media.DATE_MODIFIED,
                         MediaStore.Video.Media.MIME_TYPE,
-                        MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+                        MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+                        MediaStore.Video.Media.DURATION,
+                        MediaStore.Video.Media.WIDTH,
+                        MediaStore.Video.Media.HEIGHT
                     )
                     val sortOrder = "${MediaStore.Video.Media.DATE_MODIFIED} DESC"
                     val cursor = reactContext.contentResolver.query(uri, projection, null, null, sortOrder)
@@ -646,6 +695,9 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                         val dateIndex = it.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
                         val mimeIndex = it.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
                         val bucketIndex = it.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+                        val durIndex = it.getColumnIndex(MediaStore.Video.Media.DURATION)
+                        val widthIndex = it.getColumnIndex(MediaStore.Video.Media.WIDTH)
+                        val heightIndex = it.getColumnIndex(MediaStore.Video.Media.HEIGHT)
 
                         while (it.moveToNext()) {
                             val filePath = if (dataIndex != -1) it.getString(dataIndex) else null
@@ -655,6 +707,10 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                             if (file.name.startsWith(".")) continue
 
                             val canonical = try { file.canonicalPath } catch (e: Exception) { file.absolutePath }
+                            val dur = if (durIndex != -1) it.getLong(durIndex) else 0L
+                            val w = if (widthIndex != -1) it.getInt(widthIndex) else 0
+                            val h = if (heightIndex != -1) it.getInt(heightIndex) else 0
+
                             if (!videoMap.containsKey(canonical)) {
                                 val fileName = if (nameIndex != -1 && !it.getString(nameIndex).isNullOrEmpty()) {
                                     it.getString(nameIndex)
@@ -687,15 +743,47 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                                     lastModified = lastModified,
                                     mimeType = mimeType,
                                     parentFolder = bucketName,
-                                    extension = ext
+                                    extension = ext,
+                                    duration = dur,
+                                    width = w,
+                                    height = h
                                 )
+                            } else {
+                                val entry = videoMap[canonical]
+                                if (entry != null && entry.duration == 0L && dur > 0L) {
+                                    entry.duration = dur
+                                    entry.width = w
+                                    entry.height = h
+                                }
                             }
                         }
                     }
                 } catch (e: Exception) {
                 }
 
-                // 3. Sort descending
+                // 3. Fallback extraction using MediaMetadataRetriever for unindexed videos (up to 40 items)
+                var fallbackCount = 0
+                for (entry in videoMap.values) {
+                    if (entry.duration == 0L && fallbackCount < 40) {
+                        fallbackCount++
+                        try {
+                            val retriever = MediaMetadataRetriever()
+                            retriever.setDataSource(entry.file.absolutePath)
+                            val dStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            val wStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                            val hStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                            retriever.release()
+                            val d = dStr?.toLongOrNull() ?: 0L
+                            val w = wStr?.toIntOrNull() ?: 0
+                            val h = hStr?.toIntOrNull() ?: 0
+                            if (d > 0) entry.duration = d
+                            if (w > 0) entry.width = w
+                            if (h > 0) entry.height = h
+                        } catch (ignored: Exception) {}
+                    }
+                }
+
+                // 4. Sort descending by lastModified by default
                 val sortedList = videoMap.values.sortedByDescending { it.lastModified }
                 val array = Arguments.createArray()
 
@@ -712,6 +800,9 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                         putBoolean("isHidden", false)
                         putString("parentFolder", item.parentFolder)
                         putString("thumbnailUri", "file://${item.file.absolutePath}")
+                        putDouble("duration", item.duration.toDouble())
+                        putInt("width", item.width)
+                        putInt("height", item.height)
                     }
                     array.pushMap(map)
                 }
@@ -719,6 +810,45 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                 promise.resolve(array)
             } catch (e: Exception) {
                 promise.reject("GET_VIDEOS_ERROR", e.message, e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun getVideoMetadata(filePath: String, promise: Promise) {
+        ioExecutor.execute {
+            try {
+                val cleanPath = if (filePath.startsWith("file://")) filePath.substring(7) else filePath
+                val file = File(cleanPath)
+                if (!file.exists()) {
+                    val emptyMap = Arguments.createMap().apply {
+                        putDouble("duration", 0.0)
+                        putInt("width", 0)
+                        putInt("height", 0)
+                    }
+                    promise.resolve(emptyMap)
+                    return@execute
+                }
+                val retriever = MediaMetadataRetriever()
+                retriever.setDataSource(cleanPath)
+                val dStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                val wStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                val hStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                retriever.release()
+
+                val map = Arguments.createMap().apply {
+                    putDouble("duration", dStr?.toLongOrNull()?.toDouble() ?: 0.0)
+                    putInt("width", wStr?.toIntOrNull() ?: 0)
+                    putInt("height", hStr?.toIntOrNull() ?: 0)
+                }
+                promise.resolve(map)
+            } catch (e: Exception) {
+                val emptyMap = Arguments.createMap().apply {
+                    putDouble("duration", 0.0)
+                    putInt("width", 0)
+                    putInt("height", 0)
+                }
+                promise.resolve(emptyMap)
             }
         }
     }

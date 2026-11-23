@@ -83,5 +83,12 @@
             <data android:mimeType="*/*" />
         </intent-filter>
       </activity>
+
+      <!-- In-App High Performance Document Camera & Batch Scanner -->
+      <activity
+        android:name=".DocumentScannerActivity"
+        android:screenOrientation="portrait"
+        android:theme="@style/Theme.AppCompat.NoActionBar"
+        android:exported="true" />
     </application>
 </manifest>

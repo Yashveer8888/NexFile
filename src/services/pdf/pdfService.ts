@@ -26,6 +26,19 @@ class PdfService {
     return null;
   }
 
+  async launchBatchScanner(options?: { mode?: 'batch' | 'single' | 'idcard' }): Promise<string[]> {
+    if (this.isNativeAvailable() && NexPdf.launchBatchScanner) {
+      try {
+        const results = await NexPdf.launchBatchScanner(options || { mode: 'batch' });
+        return Array.isArray(results) ? results : [];
+      } catch (e) {
+        console.warn('Native launchBatchScanner failed, fallback to launchCameraScan:', e);
+      }
+    }
+    const single = await this.launchCameraScan();
+    return single ? [single] : [];
+  }
+
   async pickImageScan(): Promise<string | null> {
     if (this.isNativeAvailable() && NexPdf.pickImageScan) {
       try {

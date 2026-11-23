@@ -9,6 +9,9 @@ export interface VaultItem {
   size: number;
   encryptedAt: number;
   mimeType: string;
+  duration?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface VaultSettings {
@@ -18,3 +21,13 @@ export interface VaultSettings {
   lastUnlockedTimestamp: number;
 }
 
+export interface VaultMovingProgress {
+  visible: boolean;
+  type: 'import' | 'restore';
+  title: string;
+  currentFileName: string;
+  currentIndex: number;
+  totalCount: number;
+  status: 'moving' | 'verifying' | 'completed' | 'error';
+  errorMessage?: string;
+}

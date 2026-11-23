@@ -12,6 +12,7 @@ import {
   ArrowUpAZ,
   Calendar,
   HardDrive,
+  Clock,
   FileCode,
   LayoutList,
   LayoutGrid,
@@ -27,18 +28,20 @@ import { spacing, borderRadius, elevation } from '../../theme/spacing';
 interface SortFilterModalProps {
   visible: boolean;
   onClose: () => void;
+  title?: string;
   sortBy: SortField;
   sortOrder: SortOrder;
   onSortChange: (field: SortField, order: SortOrder) => void;
-  viewMode: 'list' | 'grid';
-  onViewModeChange: (mode: 'list' | 'grid') => void;
-  showHidden: boolean;
-  onToggleShowHidden: () => void;
+  viewMode?: 'list' | 'grid';
+  onViewModeChange?: (mode: 'list' | 'grid') => void;
+  showHidden?: boolean;
+  onToggleShowHidden?: () => void;
 }
 
 export const SortFilterModal: React.FC<SortFilterModalProps> = ({
   visible,
   onClose,
+  title,
   sortBy,
   sortOrder,
   onSortChange,
@@ -51,10 +54,14 @@ export const SortFilterModal: React.FC<SortFilterModalProps> = ({
 
   const sortFields: { id: SortField; label: string; icon: any }[] = [
     { id: 'name', label: 'Name', icon: sortOrder === 'asc' ? ArrowDownAZ : ArrowUpAZ },
-    { id: 'date', label: 'Modified Date', icon: Calendar },
+    { id: 'date', label: 'Date Modified', icon: Calendar },
     { id: 'size', label: 'File Size', icon: HardDrive },
+    { id: 'duration', label: 'Duration', icon: Clock },
     { id: 'type', label: 'File Type', icon: FileCode },
   ];
+
+  const hasViewMode = Boolean(viewMode && onViewModeChange);
+  const hasHiddenToggle = typeof showHidden === 'boolean' && Boolean(onToggleShowHidden);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -75,62 +82,68 @@ export const SortFilterModal: React.FC<SortFilterModalProps> = ({
         >
           {/* Header */}
           <View style={styles.header}>
-            <Text style={[typography.h3, { color: colors.text }]}>View & Sort</Text>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <Text style={[typography.h3, { color: colors.text }]}>
+              {title || (hasViewMode ? 'View & Sort' : 'Sort Files')}
+            </Text>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <X size={20} color={colors.text} />
             </TouchableOpacity>
           </View>
 
-          {/* View Mode */}
-          <Text style={[typography.labelMedium, { color: colors.textMuted, marginTop: spacing.md }]}>
-            VIEW STYLE
-          </Text>
-          <View style={styles.viewModeRow}>
-            <TouchableOpacity
-              style={[
-                styles.viewModeButton,
-                {
-                  backgroundColor: viewMode === 'list' ? colors.primaryLight : colors.surfaceVariant,
-                  borderColor: viewMode === 'list' ? colors.primary : 'transparent',
-                },
-              ]}
-              onPress={() => onViewModeChange('list')}
-            >
-              <LayoutList size={18} color={viewMode === 'list' ? colors.primary : colors.text} />
-              <Text
-                style={[
-                  typography.labelMedium,
-                  { color: viewMode === 'list' ? colors.primary : colors.text, marginLeft: 8 },
-                ]}
-              >
-                List
+          {/* View Mode (Optional) */}
+          {hasViewMode && (
+            <>
+              <Text style={[typography.labelMedium, { color: colors.textMuted, marginTop: spacing.md }]}>
+                VIEW STYLE
               </Text>
-            </TouchableOpacity>
+              <View style={styles.viewModeRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.viewModeButton,
+                    {
+                      backgroundColor: viewMode === 'list' ? colors.primaryLight : colors.surfaceVariant,
+                      borderColor: viewMode === 'list' ? colors.primary : 'transparent',
+                    },
+                  ]}
+                  onPress={() => onViewModeChange?.('list')}
+                >
+                  <LayoutList size={18} color={viewMode === 'list' ? colors.primary : colors.text} />
+                  <Text
+                    style={[
+                      typography.labelMedium,
+                      { color: viewMode === 'list' ? colors.primary : colors.text, marginLeft: 8 },
+                    ]}
+                  >
+                    List
+                  </Text>
+                </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.viewModeButton,
-                {
-                  backgroundColor: viewMode === 'grid' ? colors.primaryLight : colors.surfaceVariant,
-                  borderColor: viewMode === 'grid' ? colors.primary : 'transparent',
-                },
-              ]}
-              onPress={() => onViewModeChange('grid')}
-            >
-              <LayoutGrid size={18} color={viewMode === 'grid' ? colors.primary : colors.text} />
-              <Text
-                style={[
-                  typography.labelMedium,
-                  { color: viewMode === 'grid' ? colors.primary : colors.text, marginLeft: 8 },
-                ]}
-              >
-                Grid
-              </Text>
-            </TouchableOpacity>
-          </View>
+                <TouchableOpacity
+                  style={[
+                    styles.viewModeButton,
+                    {
+                      backgroundColor: viewMode === 'grid' ? colors.primaryLight : colors.surfaceVariant,
+                      borderColor: viewMode === 'grid' ? colors.primary : 'transparent',
+                    },
+                  ]}
+                  onPress={() => onViewModeChange?.('grid')}
+                >
+                  <LayoutGrid size={18} color={viewMode === 'grid' ? colors.primary : colors.text} />
+                  <Text
+                    style={[
+                      typography.labelMedium,
+                      { color: viewMode === 'grid' ? colors.primary : colors.text, marginLeft: 8 },
+                    ]}
+                  >
+                    Grid
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
 
           {/* Sort By */}
-          <Text style={[typography.labelMedium, { color: colors.textMuted, marginTop: spacing.lg }]}>
+          <Text style={[typography.labelMedium, { color: colors.textMuted, marginTop: hasViewMode ? spacing.lg : spacing.md }]}>
             SORT BY
           </Text>
           <View style={styles.sortList}>
@@ -184,21 +197,23 @@ export const SortFilterModal: React.FC<SortFilterModalProps> = ({
             })}
           </View>
 
-          {/* Hidden Files Toggle */}
-          <View style={[styles.switchRow, { borderTopColor: colors.divider }]}>
-            <View style={styles.switchLeft}>
-              <Eye size={18} color={colors.text} />
-              <Text style={[typography.bodyMedium, { color: colors.text, marginLeft: spacing.md }]}>
-                Show Hidden Files
-              </Text>
+          {/* Hidden Files Toggle (Optional) */}
+          {hasHiddenToggle && (
+            <View style={[styles.switchRow, { borderTopColor: colors.divider }]}>
+              <View style={styles.switchLeft}>
+                <Eye size={18} color={colors.text} />
+                <Text style={[typography.bodyMedium, { color: colors.text, marginLeft: spacing.md }]}>
+                  Show Hidden Files
+                </Text>
+              </View>
+              <Switch
+                value={showHidden}
+                onValueChange={onToggleShowHidden}
+                thumbColor={showHidden ? colors.primary : colors.surfaceVariant}
+                trackColor={{ false: colors.surfaceVariant, true: colors.primaryLight }}
+              />
             </View>
-            <Switch
-              value={showHidden}
-              onValueChange={onToggleShowHidden}
-              thumbColor={showHidden ? colors.primary : colors.surfaceVariant}
-              trackColor={{ false: colors.surfaceVariant, true: colors.primaryLight }}
-            />
-          </View>
+          )}
         </View>
       </TouchableOpacity>
     </Modal>
@@ -219,16 +234,16 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingBottom: spacing.sm,
+    alignItems: 'center',
+    marginBottom: spacing.xs,
   },
   closeBtn: {
     padding: spacing.xs,
   },
   viewModeRow: {
     flexDirection: 'row',
-    gap: spacing.md,
+    gap: spacing.base,
     marginTop: spacing.sm,
   },
   viewModeButton: {
@@ -236,12 +251,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: spacing.md,
+    paddingVertical: spacing.sm,
     borderRadius: borderRadius.md,
-    borderWidth: 1,
+    borderWidth: 1.5,
   },
   sortList: {
-    marginTop: spacing.xs,
+    marginTop: spacing.sm,
   },
   sortRow: {
     flexDirection: 'row',
@@ -264,12 +279,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingTop: spacing.base,
-    marginTop: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: spacing.base,
+    borderTopWidth: 1,
   },
   switchLeft: {
     flexDirection: 'row',
     alignItems: 'center',
   },
 });
-

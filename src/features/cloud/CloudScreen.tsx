@@ -38,6 +38,7 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { formatBytes, formatDate } from '../../utils/formatters';
 import { FileItem as FileItemType } from '../../types/file';
 import { fileService } from '../../services/filesystem/fileService';
+import { usePdfStore } from '../../app/store/usePdfStore';
 import { PdfScannerModal } from '../pdf-studio/PdfScannerModal';
 
 const GOOGLE_DRIVE_ROOT = '/storage/emulated/0/google drive files';
@@ -336,6 +337,7 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
               style={[styles.optionCard, { backgroundColor: colors.surfaceVariant }]}
               onPress={() => {
                 setShowAddMenu(false);
+                usePdfStore.getState().clearScanner();
                 setScannerVisible(true);
               }}
               activeOpacity={0.7}

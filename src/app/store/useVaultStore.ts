@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { VaultItem } from '../../types/vault';
+import { VaultItem, VaultMovingProgress } from '../../types/vault';
 import { vaultService } from '../../services/encryption/vaultService';
 import { fileService } from '../../services/filesystem/fileService';
 import { getCategoryFromExtension } from '../../utils/fileTypes';
@@ -15,6 +15,7 @@ interface VaultState {
   activeCategory: 'all' | 'images' | 'videos' | 'audio' | 'documents' | 'other';
   autoLockMinutes: number;
   lastUnlockedTime: number;
+  movingProgress: VaultMovingProgress | null;
 
   hydrate: () => Promise<void>;
   setPin: (pin: string, enableBiometric?: boolean) => Promise<void> | void;
@@ -23,9 +24,10 @@ interface VaultState {
   unlockWithBiometric: () => void;
   lockVault: () => void;
   setActiveCategory: (cat: 'all' | 'images' | 'videos' | 'audio' | 'documents' | 'other') => void;
-  importFileToVault: (sourcePath: string, pin: string) => Promise<VaultItem>;
-  importFilesToVault: (sourcePaths: string[], pin: string) => Promise<VaultItem[]>;
-  exportFileFromVault: (itemId: string, destDirPath: string, pin: string) => Promise<string>;
+  setMovingProgress: (progress: VaultMovingProgress | null) => void;
+  importFileToVault: (sourcePath: string, pin?: string) => Promise<VaultItem>;
+  importFilesToVault: (sourcePaths: string[], pin?: string) => Promise<VaultItem[]>;
+  exportFileFromVault: (itemId: string, destDirPath: string, pin?: string) => Promise<string>;
   deleteVaultItem: (itemId: string) => Promise<void>;
   deleteVaultItems: (itemIds: string[]) => Promise<void>;
   restoreFileFromVault: (itemId: string) => Promise<string>;
@@ -43,10 +45,15 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   pinHash: null,
   biometricEnabled: true,
   isHydrated: false,
-  items: [], // Zero demo/mock data: only real user-privatized files
+  items: [],
   autoLockMinutes: 5,
   lastUnlockedTime: 0,
   activeCategory: 'all',
+  movingProgress: null,
+
+  setMovingProgress: (progress) => {
+    set({ movingProgress: progress });
+  },
 
   hydrate: async () => {
     try {
@@ -56,7 +63,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         fileService.getPreference(PREF_KEY_ITEMS_LIST, '[]'),
       ]);
 
-      const hasPin = !!savedHash && savedHash.trim().length > 0;
+      const hasPin = Boolean(savedHash && savedHash.trim().length > 0);
       let parsedItems: VaultItem[] = [];
       try {
         if (savedItemsRaw && savedItemsRaw.trim().length > 0) {
@@ -134,7 +141,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     set({ activeCategory });
   },
 
-  importFileToVault: async (sourcePath: string, pin: string) => {
+  importFileToVault: async (sourcePath: string, _pin?: string) => {
     const fileName = sourcePath.split('/').pop() || 'file';
     const ext = fileName.includes('.') ? fileName.split('.').pop() || '' : '';
     const rawCategory = getCategoryFromExtension(ext);
@@ -143,69 +150,141 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         ? rawCategory
         : 'other';
 
-    const vaultDir = '/storage/emulated/0/.vault/files';
-    const cleanId = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const vaultFilePath = `${vaultDir}/${cleanId}_${fileName}`;
-    const encryptedPath = `/storage/emulated/0/.vault/${cleanId}_${fileName}.nvlt`;
+    // Show visible progress dialog so user sees file moving
+    set({
+      movingProgress: {
+        visible: true,
+        type: 'import',
+        title: 'Moving to Private Folder',
+        currentFileName: fileName,
+        currentIndex: 1,
+        totalCount: 1,
+        status: 'moving',
+      },
+    });
 
-    // 1. Copy file to hidden vault files directory
     try {
-      await fileService.copy(sourcePath, vaultDir);
-      await fileService.rename(`${vaultDir}/${fileName}`, `${cleanId}_${fileName}`);
-    } catch (e) {
-      console.warn('Vault copy error:', e);
+      const cleanId = `vlt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      // Stored in dedicated directory per item: /storage/emulated/0/.vault/files/${cleanId}/
+      // The file name on disk is EXACTLY fileName! It is NEVER changed or renamed!
+      const itemDir = `/storage/emulated/0/.vault/files/${cleanId}`;
+
+      const moveResult = await vaultService.secureMoveToVault(sourcePath, itemDir);
+      const vaultFilePath = moveResult.path;
+
+      let duration = 0;
+      let width = 0;
+      let height = 0;
+      if (category === 'videos') {
+        try {
+          const meta = await fileService.getVideoMetadata(vaultFilePath);
+          duration = meta?.duration || 0;
+          width = meta?.width || 0;
+          height = meta?.height || 0;
+        } catch (e) {}
+      }
+
+      const newItem: VaultItem = {
+        id: cleanId,
+        name: fileName, // Pure original file name preserved
+        originalPath: sourcePath,
+        encryptedPath: vaultFilePath,
+        vaultFilePath,
+        thumbnailUri: `file://${vaultFilePath}`,
+        category,
+        size: moveResult.size || 0,
+        encryptedAt: Date.now(),
+        mimeType: `application/${ext || 'octet-stream'}`,
+        duration,
+        width,
+        height,
+      };
+
+      const nextItems = [newItem, ...get().items];
+      set({
+        items: nextItems,
+        movingProgress: {
+          visible: true,
+          type: 'import',
+          title: 'Moved Safely to Private Folder',
+          currentFileName: fileName,
+          currentIndex: 1,
+          totalCount: 1,
+          status: 'completed',
+        },
+      });
+
+      // Persist items
+      await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
+
+      // Refresh general file store
+      try {
+        useFileStore.getState().refresh();
+      } catch (e) {
+        console.warn('File refresh error:', e);
+      }
+
+      // Smoothly hide progress dialog after brief completion indication
+      setTimeout(() => {
+        set({ movingProgress: null });
+      }, 700);
+
+      return newItem;
+    } catch (err: any) {
+      set({
+        movingProgress: {
+          visible: true,
+          type: 'import',
+          title: 'Failed to Move File',
+          currentFileName: fileName,
+          currentIndex: 1,
+          totalCount: 1,
+          status: 'error',
+          errorMessage: err?.message || 'File move failed. Original file is intact.',
+        },
+      });
+      setTimeout(() => {
+        set({ movingProgress: null });
+      }, 2000);
+      throw err;
     }
-
-    // 2. Encrypt file backup into .vault root
-    try {
-      await vaultService.encryptFile(sourcePath, encryptedPath, pin || '0000');
-    } catch (e) {
-      console.warn('Vault encryption error:', e);
-    }
-
-    // 3. Remove original file from normal storage
-    try {
-      await fileService.delete(sourcePath, false);
-    } catch (e) {
-      console.warn('Could not delete original file after vault import:', e);
-    }
-
-    const newItem: VaultItem = {
-      id: `vlt_${cleanId}`,
-      name: fileName,
-      originalPath: sourcePath,
-      encryptedPath,
-      vaultFilePath,
-      thumbnailUri: `file://${vaultFilePath}`,
-      category,
-      size: 1024,
-      encryptedAt: Date.now(),
-      mimeType: `application/${ext || 'octet-stream'}`,
-    };
-
-    const nextItems = [newItem, ...get().items];
-    set({ items: nextItems });
-
-    // Persist items
-    await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
-
-    // Refresh general file store so file disappears immediately
-    try {
-      useFileStore.getState().refresh();
-    } catch (e) {
-      console.warn('File refresh error:', e);
-    }
-
-    return newItem;
   },
 
-  importFilesToVault: async (sourcePaths: string[], pin: string) => {
-    const newItems: VaultItem[] = [];
-    const vaultDir = '/storage/emulated/0/.vault/files';
+  importFilesToVault: async (sourcePaths: string[], _pin?: string) => {
+    const totalCount = sourcePaths.length;
+    if (totalCount === 0) return [];
 
-    for (const sourcePath of sourcePaths) {
+    const newItems: VaultItem[] = [];
+
+    set({
+      movingProgress: {
+        visible: true,
+        type: 'import',
+        title: 'Moving to Private Folder',
+        currentFileName: sourcePaths[0].split('/').pop() || 'file',
+        currentIndex: 0,
+        totalCount,
+        status: 'moving',
+      },
+    });
+
+    for (let i = 0; i < sourcePaths.length; i++) {
+      const sourcePath = sourcePaths[i];
+      const fileName = sourcePath.split('/').pop() || 'file';
+
+      set({
+        movingProgress: {
+          visible: true,
+          type: 'import',
+          title: 'Moving to Private Folder',
+          currentFileName: fileName,
+          currentIndex: i + 1,
+          totalCount,
+          status: 'moving',
+        },
+      });
+
       try {
-        const fileName = sourcePath.split('/').pop() || 'file';
         const ext = fileName.includes('.') ? fileName.split('.').pop() || '' : '';
         const rawCategory = getCategoryFromExtension(ext);
         const category =
@@ -213,101 +292,155 @@ export const useVaultStore = create<VaultState>((set, get) => ({
             ? rawCategory
             : 'other';
 
-        const cleanId = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-        const vaultFilePath = `${vaultDir}/${cleanId}_${fileName}`;
-        const encryptedPath = `/storage/emulated/0/.vault/${cleanId}_${fileName}.nvlt`;
+        const cleanId = `vlt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const itemDir = `/storage/emulated/0/.vault/files/${cleanId}`;
 
-        // 1. Copy file to hidden vault files directory
-        try {
-          await fileService.copy(sourcePath, vaultDir);
-          await fileService.rename(`${vaultDir}/${fileName}`, `${cleanId}_${fileName}`);
-        } catch (e) {}
+        const moveResult = await vaultService.secureMoveToVault(sourcePath, itemDir);
+        const vaultFilePath = moveResult.path;
 
-        // 2. Encrypt file backup
-        try {
-          await vaultService.encryptFile(sourcePath, encryptedPath, pin || '0000');
-        } catch (e) {}
-
-        // 3. Delete from original storage
-        try {
-          await fileService.delete(sourcePath, false);
-        } catch (e) {}
+        let duration = 0;
+        let width = 0;
+        let height = 0;
+        if (category === 'videos') {
+          try {
+            const meta = await fileService.getVideoMetadata(vaultFilePath);
+            duration = meta?.duration || 0;
+            width = meta?.width || 0;
+            height = meta?.height || 0;
+          } catch (e) {}
+        }
 
         const newItem: VaultItem = {
-          id: `vlt_${cleanId}`,
+          id: cleanId,
           name: fileName,
           originalPath: sourcePath,
-          encryptedPath,
+          encryptedPath: vaultFilePath,
           vaultFilePath,
           thumbnailUri: `file://${vaultFilePath}`,
           category,
-          size: 1024,
+          size: moveResult.size || 0,
           encryptedAt: Date.now(),
           mimeType: `application/${ext || 'octet-stream'}`,
+          duration,
+          width,
+          height,
         };
         newItems.push(newItem);
       } catch (err) {
-        console.warn('Failed to import file to vault:', sourcePath, err);
+        console.warn('Failed to import file to vault safely:', sourcePath, err);
       }
     }
 
     if (newItems.length > 0) {
       const nextItems = [...newItems, ...get().items];
-      set({ items: nextItems });
+      set({
+        items: nextItems,
+        movingProgress: {
+          visible: true,
+          type: 'import',
+          title: 'All Files Secured',
+          currentFileName: `${newItems.length} files secured safely`,
+          currentIndex: totalCount,
+          totalCount,
+          status: 'completed',
+        },
+      });
       await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
       try {
         useFileStore.getState().refresh();
       } catch (e) {
         console.warn('File refresh error:', e);
       }
+    } else {
+      set({
+        movingProgress: {
+          visible: true,
+          type: 'import',
+          title: 'Error Moving Files',
+          currentFileName: 'Could not secure files',
+          currentIndex: totalCount,
+          totalCount,
+          status: 'error',
+          errorMessage: 'Files could not be moved. Original files remain safe.',
+        },
+      });
     }
+
+    setTimeout(() => {
+      set({ movingProgress: null });
+    }, 800);
 
     return newItems;
   },
 
-  exportFileFromVault: async (itemId: string, destDirPath: string, pin: string) => {
+  exportFileFromVault: async (itemId: string, destDirPath: string, _pin?: string) => {
     const item = get().items.find((i) => i.id === itemId);
     if (!item) throw new Error('Vault item not found');
 
-    const destPath = `${destDirPath}/${item.name}`;
     const vPath =
       item.vaultFilePath ||
       item.encryptedPath.replace('/.vault/', '/.vault/files/').replace(/\.nvlt$/, '');
 
-    let restored = false;
-    try {
-      await fileService.copy(vPath, destDirPath);
-      await fileService.delete(vPath, false);
-      restored = true;
-    } catch (e) {
-      console.warn('Direct vault move failed, attempting decrypt:', e);
-    }
+    set({
+      movingProgress: {
+        visible: true,
+        type: 'restore',
+        title: 'Exporting File',
+        currentFileName: item.name,
+        currentIndex: 1,
+        totalCount: 1,
+        status: 'moving',
+      },
+    });
 
-    if (!restored) {
+    try {
+      const res = await vaultService.restoreFromVault(vPath, destDirPath, item.name);
+
+      // Remove from vault items
+      const nextItems = get().items.filter((i) => i.id !== itemId);
+      set({
+        items: nextItems,
+        movingProgress: {
+          visible: true,
+          type: 'restore',
+          title: 'File Exported Safely',
+          currentFileName: item.name,
+          currentIndex: 1,
+          totalCount: 1,
+          status: 'completed',
+        },
+      });
+      await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
+
       try {
-        await vaultService.decryptFile(item.encryptedPath, destPath, pin || '0000');
+        useFileStore.getState().refresh();
       } catch (e) {
-        console.warn('Decrypt fallback error:', e);
+        console.warn('File refresh error:', e);
       }
+
+      setTimeout(() => {
+        set({ movingProgress: null });
+      }, 700);
+
+      return res.path;
+    } catch (err: any) {
+      set({
+        movingProgress: {
+          visible: true,
+          type: 'restore',
+          title: 'Export Failed',
+          currentFileName: item.name,
+          currentIndex: 1,
+          totalCount: 1,
+          status: 'error',
+          errorMessage: err?.message || 'Could not export file',
+        },
+      });
+      setTimeout(() => {
+        set({ movingProgress: null });
+      }, 1500);
+      throw err;
     }
-
-    try {
-      await fileService.delete(item.encryptedPath, false);
-    } catch (e) {}
-
-    // Remove from vault items
-    const nextItems = get().items.filter((i) => i.id !== itemId);
-    set({ items: nextItems });
-    await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
-
-    // Refresh general file store so exported file appears
-    try {
-      useFileStore.getState().refresh();
-    } catch (e) {
-      console.warn('File refresh error:', e);
-    }
-
-    return destPath;
   },
 
   deleteVaultItem: async (itemId: string) => {
@@ -316,13 +449,23 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const vPath =
         item.vaultFilePath ||
         item.encryptedPath.replace('/.vault/', '/.vault/files/').replace(/\.nvlt$/, '');
+
       try {
         await fileService.delete(vPath, false);
+        // Also cleanup item parent folder if it exists
+        const parentDir = vPath.substring(0, vPath.lastIndexOf('/'));
+        if (parentDir.includes('/.vault/files/vlt_')) {
+          await fileService.delete(parentDir, false);
+        }
       } catch (e) {}
+
       try {
-        await fileService.delete(item.encryptedPath, false);
+        if (item.encryptedPath && item.encryptedPath !== vPath) {
+          await fileService.delete(item.encryptedPath, false);
+        }
       } catch (e) {}
     }
+
     const nextItems = get().items.filter((i) => i.id !== itemId);
     set({ items: nextItems });
     await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
@@ -339,9 +482,16 @@ export const useVaultStore = create<VaultState>((set, get) => ({
           item.encryptedPath.replace('/.vault/', '/.vault/files/').replace(/\.nvlt$/, '');
         try {
           await fileService.delete(vPath, false);
+          const parentDir = vPath.substring(0, vPath.lastIndexOf('/'));
+          if (parentDir.includes('/.vault/files/vlt_')) {
+            await fileService.delete(parentDir, false);
+          }
         } catch (e) {}
+
         try {
-          await fileService.delete(item.encryptedPath, false);
+          if (item.encryptedPath && item.encryptedPath !== vPath) {
+            await fileService.delete(item.encryptedPath, false);
+          }
         } catch (e) {}
       } else {
         remainingItems.push(item);
@@ -367,48 +517,100 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       parentDir = '/storage/emulated/0/Download';
     }
 
-    let restored = false;
-    try {
-      await fileService.copy(vPath, parentDir);
-      await fileService.delete(vPath, false);
-      restored = true;
-    } catch (e) {
-      console.warn('Direct restore copy failed, attempting decrypt:', e);
-    }
+    set({
+      movingProgress: {
+        visible: true,
+        type: 'restore',
+        title: 'Restoring to Original Location',
+        currentFileName: item.name,
+        currentIndex: 1,
+        totalCount: 1,
+        status: 'moving',
+      },
+    });
 
-    if (!restored) {
-      const destPath = `${parentDir}/${item.name}`;
+    try {
+      const res = await vaultService.restoreFromVault(vPath, parentDir, item.name);
+
+      const nextItems = get().items.filter((i) => i.id !== itemId);
+      set({
+        items: nextItems,
+        movingProgress: {
+          visible: true,
+          type: 'restore',
+          title: 'Restored Successfully',
+          currentFileName: item.name,
+          currentIndex: 1,
+          totalCount: 1,
+          status: 'completed',
+        },
+      });
+
+      await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
+
       try {
-        await vaultService.decryptFile(item.encryptedPath, destPath, '0000');
-        restored = true;
-      } catch (e) {
-        console.warn('Decrypt fallback error:', e);
-      }
+        useFileStore.getState().refresh();
+      } catch (e) {}
+
+      setTimeout(() => {
+        set({ movingProgress: null });
+      }, 700);
+
+      return res.path;
+    } catch (err: any) {
+      set({
+        movingProgress: {
+          visible: true,
+          type: 'restore',
+          title: 'Restore Failed',
+          currentFileName: item.name,
+          currentIndex: 1,
+          totalCount: 1,
+          status: 'error',
+          errorMessage: err?.message || 'Could not restore file',
+        },
+      });
+      setTimeout(() => {
+        set({ movingProgress: null });
+      }, 1500);
+      throw err;
     }
-
-    try {
-      await fileService.delete(item.encryptedPath, false);
-    } catch (e) {}
-
-    const nextItems = get().items.filter((i) => i.id !== itemId);
-    set({ items: nextItems });
-    await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(nextItems));
-
-    try {
-      useFileStore.getState().refresh();
-    } catch (e) {}
-
-    return `${parentDir}/${item.name}`;
   },
 
   restoreFilesFromVault: async (itemIds: string[]) => {
+    const totalCount = itemIds.length;
     let restoredCount = 0;
     let failedCount = 0;
     const currentItems = get().items;
     const remainingItems: VaultItem[] = [];
 
-    for (const item of currentItems) {
+    set({
+      movingProgress: {
+        visible: true,
+        type: 'restore',
+        title: 'Restoring from Private Folder',
+        currentFileName: '',
+        currentIndex: 0,
+        totalCount,
+        status: 'moving',
+      },
+    });
+
+    for (let i = 0; i < currentItems.length; i++) {
+      const item = currentItems[i];
       if (itemIds.includes(item.id)) {
+        set({
+          movingProgress: {
+            visible: true,
+            type: 'restore',
+            title: 'Restoring Files',
+            currentFileName: item.name,
+            currentIndex: restoredCount + failedCount + 1,
+            totalCount,
+            status: 'moving',
+          },
+        });
+
         try {
           const vPath =
             item.vaultFilePath ||
@@ -421,36 +623,10 @@ export const useVaultStore = create<VaultState>((set, get) => ({
             parentDir = '/storage/emulated/0/Download';
           }
 
-          let restored = false;
-          try {
-            await fileService.copy(vPath, parentDir);
-            await fileService.delete(vPath, false);
-            restored = true;
-          } catch (e) {
-            console.warn('Direct restore copy failed:', e);
-          }
-
-          if (!restored) {
-            const destPath = `${parentDir}/${item.name}`;
-            try {
-              await vaultService.decryptFile(item.encryptedPath, destPath, '0000');
-              restored = true;
-            } catch (e) {
-              console.warn('Decrypt fallback error:', e);
-            }
-          }
-
-          try {
-            await fileService.delete(item.encryptedPath, false);
-          } catch (e) {}
-
-          if (restored) {
-            restoredCount++;
-          } else {
-            failedCount++;
-            remainingItems.push(item);
-          }
+          await vaultService.restoreFromVault(vPath, parentDir, item.name);
+          restoredCount++;
         } catch (err) {
+          console.warn('Failed restoring item:', item.name, err);
           failedCount++;
           remainingItems.push(item);
         }
@@ -459,12 +635,28 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       }
     }
 
-    set({ items: remainingItems });
+    set({
+      items: remainingItems,
+      movingProgress: {
+        visible: true,
+        type: 'restore',
+        title: restoredCount > 0 ? 'Files Restored' : 'Restore Finished',
+        currentFileName: `${restoredCount} file${restoredCount > 1 ? 's' : ''} restored safely`,
+        currentIndex: totalCount,
+        totalCount,
+        status: 'completed',
+      },
+    });
+
     await fileService.savePreference(PREF_KEY_ITEMS_LIST, JSON.stringify(remainingItems));
 
     try {
       useFileStore.getState().refresh();
     } catch (e) {}
+
+    setTimeout(() => {
+      set({ movingProgress: null });
+    }, 800);
 
     return { restoredCount, failedCount };
   },

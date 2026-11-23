@@ -10,7 +10,7 @@ export type FileCategory =
   | 'whatsapp'
   | 'bluetooth';
 
-export type SortField = 'name' | 'date' | 'size' | 'type';
+export type SortField = 'name' | 'date' | 'size' | 'type' | 'duration';
 export type SortOrder = 'asc' | 'desc';
 
 export interface FileItem {
@@ -30,6 +30,9 @@ export interface FileItem {
   thumbnailUri?: string;
   category?: FileCategory;
   parentFolder?: string;
+  duration?: number; // in milliseconds or seconds
+  width?: number; // video/image width
+  height?: number; // video/image height
 }
 
 export interface StorageVolume {

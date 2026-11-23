@@ -88,5 +88,44 @@ export function formatDuration(seconds: number): string {
   return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
+export function formatVideoDuration(dur: number): string {
+  if (!dur || isNaN(dur) || dur <= 0) return '00:00';
+  // If dur > 10000, it is in milliseconds (10s = 10000ms)
+  const totalSeconds = dur > 10000 ? Math.floor(dur / 1000) : Math.floor(dur);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  if (h > 0) {
+    return `${h}:${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+  }
+  return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+}
+
+export function getVideoQuality(width?: number, height?: number): string {
+  const w = width || 0;
+  const h = height || 0;
+  const maxDim = Math.max(w, h);
+  const minDim = Math.min(w, h);
+  if (minDim >= 2160 || maxDim >= 3840) return '4K';
+  if (minDim >= 1440 || maxDim >= 2560) return '2K';
+  if (minDim >= 1080 || maxDim >= 1920) return '1080p';
+  if (minDim >= 720 || maxDim >= 1280) return '720p';
+  if (minDim >= 480 || maxDim >= 854) return '480p';
+  if (minDim >= 360) return '360p';
+  if (minDim > 0 || maxDim > 0) return 'SD';
+  return '';
+}
+
+export function formatDateTime(timestamp: number): string {
+  if (!timestamp || isNaN(timestamp)) return '--';
+  const date = new Date(timestamp);
+  const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+  const day = date.getDate();
+  const month = date.toLocaleDateString([], { month: 'short' });
+  const year = date.getFullYear();
+  return `${day} ${month} ${year}, ${timeString}`;
+}
+
+
 
 

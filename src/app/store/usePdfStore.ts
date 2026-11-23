@@ -26,6 +26,7 @@ interface PdfState {
   scannedPages: ScannedPage[];
   activePageIndex: number;
   addScannedPage: (uri: string) => void;
+  addScannedPages: (uris: string[]) => void;
   removeScannedPage: (id: string) => void;
   rotateScannedPage: (id: string) => void;
   setPageFilter: (id: string, filter: DocumentFilterType) => void;
@@ -75,6 +76,23 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     set((state) => ({
       scannedPages: [...state.scannedPages, newPage],
       activePageIndex: state.scannedPages.length,
+    }));
+  },
+
+  addScannedPages: (uris: string[]) => {
+    if (!uris || uris.length === 0) return;
+    const newPages: ScannedPage[] = uris.map((uri, idx) => ({
+      id: `page_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+      uri,
+      rotation: 0,
+      filter: 'magic_color',
+      brightness: 0,
+      contrast: 0,
+      pageSize: 'A4',
+    }));
+    set((state) => ({
+      scannedPages: [...state.scannedPages, ...newPages],
+      activePageIndex: state.scannedPages.length + newPages.length - 1,
     }));
   },
 

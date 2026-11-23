@@ -373,6 +373,22 @@ export class NativeBridgeService {
     return null;
   }
 
+  static async getVideoMetadata(filePath: string): Promise<{ duration: number; width: number; height: number }> {
+    if (this.isNativeAvailable() && NexFileManager?.getVideoMetadata) {
+      try {
+        const meta = await NexFileManager.getVideoMetadata(filePath);
+        return {
+          duration: meta?.duration || 0,
+          width: meta?.width || 0,
+          height: meta?.height || 0,
+        };
+      } catch (e) {
+        console.warn('Failed to get video metadata', e);
+      }
+    }
+    return { duration: 0, width: 0, height: 0 };
+  }
+
   static async openFile(filePath: string, mimeType?: string): Promise<boolean> {
     if (this.isNativeAvailable()) {
       return await NexFileManager.openFile(filePath, mimeType || '*/*');

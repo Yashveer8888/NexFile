@@ -176,6 +176,10 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
   const trackLayoutRef = useRef<{ pageX: number; width: number }>({ pageX: 0, width: 0 });
   const progressAnim = useRef(new Animated.Value(0)).current;
 
+  // Stale progress suppression after seek (prevents progress bar rubber-banding/jumping)
+  const seekPendingUntilRef = useRef<number>(0);
+  const lastSeekTargetRef = useRef<number>(0);
+
   // Refs for performance throttling
   const hideControlsTimeoutRef = useRef<any>(null);
   const lastTapRef = useRef<number>(0);
@@ -342,6 +346,15 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
     if (!isScrubbingRef.current) {
       const ct = event.nativeEvent.currentTime;
 
+      // Filter out stale pre-seek ticks while waiting for user seek to land
+      if (Date.now() < seekPendingUntilRef.current) {
+        if (Math.abs(ct - lastSeekTargetRef.current) > 1.5) {
+          // Stale tick from before seek! Ignore it!
+          return;
+        }
+        seekPendingUntilRef.current = 0;
+      }
+
       // Filter out stale pre-seek ticks while waiting for initial resume seek to land
       if (isAwaitingInitialResumeRef.current && currentFileRef.current) {
         const savedPos = useVideoResumeStore.getState().getResumePosition(currentFileRef.current.path);
@@ -422,6 +435,8 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
       currentTimeRef.current = target;
       setCurrentTime(target);
       setSeekTarget(target);
+      lastSeekTargetRef.current = target;
+      seekPendingUntilRef.current = Date.now() + 600;
       if (durationRef.current > 0) {
         progressAnim.stopAnimation();
         progressAnim.setValue(target / durationRef.current);
@@ -551,7 +566,8 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
           const trackLeft = trackLayoutRef.current.pageX;
           const trackW =
             trackLayoutRef.current.width > 0 ? trackLayoutRef.current.width : (windowWidthRef.current - 120);
-          const ratio = Math.max(0, Math.min(1, (grantPageX - trackLeft) / trackW));
+          const touchX = grantLocX >= 0 && grantLocX <= trackW ? grantLocX : (grantPageX - trackLeft);
+          const ratio = Math.max(0, Math.min(1, touchX / trackW));
           setScrubRatio(ratio);
           progressAnim.setValue(ratio);
           if (durationRef.current > 0) {
@@ -588,6 +604,9 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
           setCurrentTime(finalTime);
           currentTimeRef.current = finalTime;
           setSeekTarget(finalTime);
+          lastSeekTargetRef.current = finalTime;
+          seekPendingUntilRef.current = Date.now() + 600;
+
           if (currentFileRef.current) {
             useVideoResumeStore.getState().saveResumePosition(
               currentFileRef.current,
@@ -806,6 +825,8 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
             currentTimeRef.current = finalTarget;
             setCurrentTime(finalTarget);
             setSeekTarget(finalTarget);
+            lastSeekTargetRef.current = finalTarget;
+            seekPendingUntilRef.current = Date.now() + 600;
             if (durationRef.current > 0) {
               progressAnim.setValue(finalTarget / durationRef.current);
             }
@@ -1168,6 +1189,8 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
             <View
               ref={trackContainerRef}
               style={styles.progressTrackContainer}
+              collapsable={false}
+              hitSlop={{ top: 20, bottom: 20, left: 10, right: 10 }}
               onLayout={(e) => {
                 const w = e.nativeEvent.layout.width;
                 setTrackWidth(w);
@@ -1182,12 +1205,26 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
               }}
               {...progressPanResponder.panHandlers}
             >
-              <View style={styles.progressTrackBg}>
-                <Animated.View style={[styles.progressTrackFill, { width: progressWidthPercent }]} />
+              <View style={[styles.progressTrackBg, isScrubbing && { height: 6 }]} pointerEvents="none">
+                <Animated.View
+                  style={[
+                    styles.progressTrackFill,
+                    { width: progressWidthPercent },
+                    isScrubbing && { backgroundColor: '#00E676' },
+                  ]}
+                  pointerEvents="none"
+                />
               </View>
 
               {/* Scrubber Knob (Glides Smoothly at 60fps) */}
-              <Animated.View style={[styles.progressThumb, { left: progressWidthPercent }]} />
+              <Animated.View
+                style={[
+                  styles.progressThumb,
+                  { left: progressWidthPercent },
+                  isScrubbing && styles.progressThumbActive,
+                ]}
+                pointerEvents="none"
+              />
             </View>
 
             <Text style={styles.timeLabelText}>{formatDuration(duration)}</Text>
@@ -1742,12 +1779,25 @@ const styles = StyleSheet.create({
   },
   progressThumb: {
     position: 'absolute',
-    top: 14,
+    top: 13,
     width: 14,
     height: 14,
     borderRadius: 7,
     backgroundColor: '#69F0AE',
     marginLeft: -7,
+  },
+  progressThumbActive: {
+    top: 11,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#00E676',
+    marginLeft: -9,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.45,
+    shadowRadius: 3,
   },
 
   // Modals

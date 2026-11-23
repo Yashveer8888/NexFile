@@ -31,12 +31,33 @@ class NexPdfModule(private val reactContext: ReactApplicationContext) :
     private val ioExecutor = java.util.concurrent.Executors.newFixedThreadPool(3)
 
     private var cameraPromise: Promise? = null
-    private var currentCameraPhotoFile: File? = null
+    private var batchScanPromise: Promise? = null
     private var pickPromise: Promise? = null
 
     companion object {
         private const val REQUEST_CAMERA = 9101
         private const val REQUEST_PICK_IMAGE = 9102
+        private const val REQUEST_BATCH_SCANNER = 9103
+    }
+
+    @ReactMethod
+    fun launchBatchScanner(options: ReadableMap?, promise: Promise) {
+        val activity = reactContext.currentActivity
+        if (activity == null) {
+            promise.reject("NO_ACTIVITY", "Current activity is null")
+            return
+        }
+
+        batchScanPromise = promise
+        try {
+            val intent = Intent(activity, com.nexfile.DocumentScannerActivity::class.java).apply {
+                putExtra("mode", options?.getString("mode") ?: "batch")
+            }
+            activity.startActivityForResult(intent, REQUEST_BATCH_SCANNER)
+        } catch (e: Exception) {
+            batchScanPromise = null
+            promise.reject("SCANNER_ERROR", e.message, e)
+        }
     }
 
     @ReactMethod
@@ -49,19 +70,10 @@ class NexPdfModule(private val reactContext: ReactApplicationContext) :
 
         cameraPromise = promise
         try {
-            val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            val photoFile = File(reactContext.cacheDir, "scan_${System.currentTimeMillis()}.jpg")
-            currentCameraPhotoFile = photoFile
-
-            val photoUri = FileProvider.getUriForFile(
-                reactContext,
-                "${reactContext.packageName}.fileprovider",
-                photoFile
-            )
-            cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri)
-            cameraIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-
-            activity.startActivityForResult(cameraIntent, REQUEST_CAMERA)
+            val intent = Intent(activity, com.nexfile.DocumentScannerActivity::class.java).apply {
+                putExtra("mode", "single")
+            }
+            activity.startActivityForResult(intent, REQUEST_CAMERA)
         } catch (e: Exception) {
             cameraPromise = null
             promise.reject("CAMERA_ERROR", e.message, e)
@@ -93,21 +105,34 @@ class NexPdfModule(private val reactContext: ReactApplicationContext) :
             val promise = cameraPromise
             cameraPromise = null
 
-            if (resultCode == Activity.RESULT_OK) {
-                val file = currentCameraPhotoFile
-                if (file != null && file.exists() && file.length() > 0) {
-                    promise?.resolve(file.absolutePath)
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val paths = data.getStringArrayListExtra("scanned_images")
+                if (paths != null && paths.isNotEmpty()) {
+                    promise?.resolve(paths[0])
                 } else {
-                    val uri = data?.data
-                    if (uri != null) {
-                        val path = copyUriToCache(uri)
-                        promise?.resolve(path)
-                    } else {
-                        promise?.resolve(null)
-                    }
+                    promise?.resolve(null)
                 }
             } else {
                 promise?.resolve(null)
+            }
+            return
+        }
+
+        if (requestCode == REQUEST_BATCH_SCANNER) {
+            val promise = batchScanPromise
+            batchScanPromise = null
+
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val paths = data.getStringArrayListExtra("scanned_images")
+                val array = com.facebook.react.bridge.Arguments.createArray()
+                if (paths != null) {
+                    for (p in paths) {
+                        array.pushString(p)
+                    }
+                }
+                promise?.resolve(array)
+            } else {
+                promise?.resolve(com.facebook.react.bridge.Arguments.createArray())
             }
             return
         }
