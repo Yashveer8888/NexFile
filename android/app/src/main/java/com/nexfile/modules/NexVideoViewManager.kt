@@ -54,12 +54,18 @@ class NexVideoViewManager : SimpleViewManager<NexVideoView>() {
         }
     }
 
+    @ReactProp(name = "selectedSubtitleTrack", defaultInt = -1)
+    fun setSelectedSubtitleTrack(view: NexVideoView, index: Int) {
+        view.selectSubtitleTrack(index)
+    }
+
     override fun getExportedCustomDirectEventTypeConstants(): Map<String, Any>? {
         return MapBuilder.builder<String, Any>()
             .put("topVideoProgress", MapBuilder.of("registrationName", "onVideoProgress"))
             .put("topVideoLoad", MapBuilder.of("registrationName", "onVideoLoad"))
             .put("topVideoEnd", MapBuilder.of("registrationName", "onVideoEnd"))
             .put("topVideoError", MapBuilder.of("registrationName", "onVideoError"))
+            .put("topSubtitleCue", MapBuilder.of("registrationName", "onSubtitleCue"))
             .build()
     }
 

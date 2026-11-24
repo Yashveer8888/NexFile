@@ -1,24 +1,44 @@
 package com.nexfile.modules
 
 import android.content.Context
+import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
-import android.media.MediaPlayer
-import android.media.PlaybackParams
+import android.graphics.Typeface
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.TypedValue
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
 import android.widget.FrameLayout
+import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
+import androidx.media3.common.text.CueGroup
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.CaptionStyleCompat
+import androidx.media3.ui.SubtitleView
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactContext
 import com.facebook.react.uimanager.events.RCTEventEmitter
+import java.io.File
+import java.util.Locale
 
+@OptIn(UnstableApi::class)
 class NexVideoView(context: Context) : FrameLayout(context), TextureView.SurfaceTextureListener {
     private val textureView: TextureView = TextureView(context)
-    private var mediaPlayer: MediaPlayer? = null
+    private var exoPlayer: ExoPlayer? = null
     private var surface: Surface? = null
     private var videoPath: String? = null
     private var isPrepared = false
@@ -34,19 +54,33 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
     private var isSeeking = false
     private val handler = Handler(Looper.getMainLooper())
 
+    private data class TrackRef(
+        val group: Tracks.Group,
+        val formatIndex: Int,
+        val languageLabel: String
+    )
+
+    private val audioTrackRefs = mutableListOf<TrackRef>()
+    private val textTrackRefs = mutableListOf<TrackRef>()
+    private var targetAudioTrackIndex = -1
+    private var targetSubtitleTrackIndex = -1
+
     private val progressRunnable = object : Runnable {
         override fun run() {
             try {
-                if (mediaPlayer != null && isPrepared && mediaPlayer!!.isPlaying && !isSeeking) {
-                    val currentPos = mediaPlayer!!.currentPosition
-                    val duration = mediaPlayer!!.duration
-                    val event = Arguments.createMap().apply {
-                        putDouble("currentTime", currentPos.toDouble() / 1000.0)
-                        putDouble("duration", duration.toDouble() / 1000.0)
+                val player = exoPlayer
+                if (player != null && isPrepared && player.isPlaying && !isSeeking) {
+                    val currentPos = player.currentPosition
+                    val dur = player.duration
+                    if (dur > 0) {
+                        val event = Arguments.createMap().apply {
+                            putDouble("currentTime", currentPos.toDouble() / 1000.0)
+                            putDouble("duration", dur.toDouble() / 1000.0)
+                        }
+                        (context as? ReactContext)
+                            ?.getJSModule(RCTEventEmitter::class.java)
+                            ?.receiveEvent(id, "topVideoProgress", event)
                     }
-                    (context as? ReactContext)
-                        ?.getJSModule(RCTEventEmitter::class.java)
-                        ?.receiveEvent(id, "topVideoProgress", event)
                 }
             } catch (_: Exception) {}
             handler.postDelayed(this, 100)
@@ -59,11 +93,19 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
         addView(textureView, lp)
     }
 
+    private fun dpToPx(dp: Int): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            dp.toFloat(),
+            context.resources.displayMetrics
+        ).toInt()
+    }
+
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
         surface = Surface(surfaceTexture)
-        mediaPlayer?.setSurface(surface)
-        if (mediaPlayer == null && videoPath != null) {
-            setupMediaPlayer()
+        exoPlayer?.setVideoSurface(surface)
+        if (exoPlayer == null && videoPath != null) {
+            setupPlayer()
         } else {
             adjustAspectRatio()
         }
@@ -77,7 +119,7 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
         surface?.release()
         surface = null
         try {
-            mediaPlayer?.setSurface(null)
+            exoPlayer?.setVideoSurface(null)
         } catch (_: Exception) {}
         return true
     }
@@ -85,128 +127,178 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
 
     fun setSource(path: String?) {
-        if (path == videoPath && mediaPlayer != null) return
+        if (path == videoPath && exoPlayer != null) return
         videoPath = path
         releasePlayer()
         if (surface != null && videoPath != null) {
-            setupMediaPlayer()
+            setupPlayer()
         }
     }
 
-    private fun setupMediaPlayer() {
+    private fun setupPlayer() {
         try {
             val path = videoPath ?: return
             val cleanPath = if (path.startsWith("file://")) path.substring(7) else path
-            val mp = MediaPlayer()
-            mediaPlayer = mp
-            mp.setDataSource(context, Uri.parse(cleanPath))
-            mp.setSurface(surface)
-            mp.isLooping = isLoop
-
-            mp.setOnVideoSizeChangedListener { _, w, h ->
-                videoWidth = w
-                videoHeight = h
-                adjustAspectRatio()
+            val uri = if (cleanPath.startsWith("content://") || cleanPath.startsWith("http://") || cleanPath.startsWith("https://")) {
+                Uri.parse(cleanPath)
+            } else {
+                Uri.fromFile(File(cleanPath))
             }
 
-            mp.setOnPreparedListener {
-                isPrepared = true
-                videoWidth = mp.videoWidth
-                videoHeight = mp.videoHeight
-                adjustAspectRatio()
+            val player = ExoPlayer.Builder(context).build()
+            exoPlayer = player
+            player.setVideoSurface(surface)
+            player.repeatMode = if (isLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            player.playWhenReady = !isPaused
+            player.playbackParameters = PlaybackParameters(playbackSpeed)
 
-                val duration = mp.duration
-                val event = Arguments.createMap().apply {
-                    putDouble("duration", duration.toDouble() / 1000.0)
-                    putInt("width", videoWidth)
-                    putInt("height", videoHeight)
+            player.addListener(object : Player.Listener {
+                override fun onVideoSizeChanged(videoSize: VideoSize) {
+                    videoWidth = videoSize.width
+                    videoHeight = videoSize.height
+                    adjustAspectRatio()
                 }
 
-                // Audio & Subtitle track enumeration
-                try {
-                    val tracks = mp.trackInfo
-                    val audioTracks = Arguments.createArray()
-                    val subtitleTracks = Arguments.createArray()
-                    tracks.forEachIndexed { i, t ->
-                        if (t.trackType == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) {
-                            val map = Arguments.createMap()
-                            map.putInt("index", i)
-                            val lang = if (!t.language.isNullOrEmpty() && t.language != "und") t.language else "Track ${i + 1}"
-                            map.putString("language", lang)
-                            audioTracks.pushMap(map)
-                        } else if (t.trackType == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT ||
-                                   t.trackType == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE) {
-                            val map = Arguments.createMap()
-                            map.putInt("index", i)
-                            val lang = if (!t.language.isNullOrEmpty() && t.language != "und") t.language else "Sub ${i + 1}"
-                            map.putString("language", lang)
-                            subtitleTracks.pushMap(map)
+                override fun onCues(cueGroup: CueGroup) {
+                    val cues = cueGroup.cues
+                    val sb = StringBuilder()
+                    for (cue in cues) {
+                        val t = cue.text
+                        if (!t.isNullOrEmpty()) {
+                            if (sb.isNotEmpty()) sb.append("\n")
+                            sb.append(t)
                         }
                     }
-                    event.putArray("audioTracks", audioTracks)
-                    event.putArray("subtitleTracks", subtitleTracks)
-                    event.putBoolean("hasSubtitles", subtitleTracks.size() > 0)
-                } catch (_: Exception) {}
-
-                (context as? ReactContext)
-                    ?.getJSModule(RCTEventEmitter::class.java)
-                    ?.receiveEvent(id, "topVideoLoad", event)
-
-                // Initialize LoudnessEnhancer for audio boost
-                try {
-                    loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
-                    applyVolumeBoost()
-                } catch (_: Exception) {}
-
-                applyPlaybackSpeed()
-
-                if (pendingSeek != null && pendingSeek!! > 0) {
-                    val targetSec = pendingSeek!!
-                    pendingSeek = null
-                    seekTo(targetSec)
-                }
-
-                if (!isPaused) {
-                    mp.start()
-                }
-                handler.post(progressRunnable)
-            }
-
-            mp.setOnSeekCompleteListener {
-                isSeeking = false
-                try {
-                    if (mediaPlayer != null && isPrepared) {
-                        val currentPos = mediaPlayer!!.currentPosition
-                        val duration = mediaPlayer!!.duration
+                    val cueText = sb.toString()
+                    post {
+                        if (targetSubtitleTrackIndex >= 0) {
+                            subtitleView?.visibility = View.VISIBLE
+                            subtitleView?.bringToFront()
+                            subtitleView?.setCues(cues)
+                        } else {
+                            subtitleView?.setCues(emptyList())
+                            subtitleView?.visibility = View.GONE
+                        }
                         val event = Arguments.createMap().apply {
-                            putDouble("currentTime", currentPos.toDouble() / 1000.0)
-                            putDouble("duration", duration.toDouble() / 1000.0)
+                            putString("text", if (targetSubtitleTrackIndex >= 0) cueText else "")
                         }
                         (context as? ReactContext)
                             ?.getJSModule(RCTEventEmitter::class.java)
-                            ?.receiveEvent(id, "topVideoProgress", event)
+                            ?.receiveEvent(id, "topSubtitleCue", event)
                     }
-                } catch (_: Exception) {}
-            }
-
-            mp.setOnCompletionListener {
-                val event = Arguments.createMap()
-                (context as? ReactContext)
-                    ?.getJSModule(RCTEventEmitter::class.java)
-                    ?.receiveEvent(id, "topVideoEnd", event)
-            }
-
-            mp.setOnErrorListener { _, what, extra ->
-                val event = Arguments.createMap().apply {
-                    putString("error", "Playback error code: $what, extra: $extra")
                 }
-                (context as? ReactContext)
-                    ?.getJSModule(RCTEventEmitter::class.java)
-                    ?.receiveEvent(id, "topVideoError", event)
-                true
-            }
 
-            mp.prepareAsync()
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    when (playbackState) {
+                        Player.STATE_READY -> {
+                            if (!isPrepared) {
+                                isPrepared = true
+                                val durationMs = player.duration
+                                val event = Arguments.createMap().apply {
+                                    putDouble("duration", if (durationMs > 0) durationMs.toDouble() / 1000.0 else 0.0)
+                                    putInt("width", videoWidth)
+                                    putInt("height", videoHeight)
+                                }
+
+                                // Populate audio and subtitle tracks
+                                enumerateTracks(player.currentTracks, event)
+
+                                (context as? ReactContext)
+                                    ?.getJSModule(RCTEventEmitter::class.java)
+                                    ?.receiveEvent(id, "topVideoLoad", event)
+
+                                // Setup LoudnessEnhancer for boost
+                                setupLoudnessEnhancer(player.audioSessionId)
+                                applyVolume()
+
+                                if (pendingSeek != null && pendingSeek!! > 0) {
+                                    val targetSec = pendingSeek!!
+                                    pendingSeek = null
+                                    seekTo(targetSec)
+                                }
+
+                                handler.post(progressRunnable)
+                            }
+                        }
+                        Player.STATE_ENDED -> {
+                            val event = Arguments.createMap()
+                            (context as? ReactContext)
+                                ?.getJSModule(RCTEventEmitter::class.java)
+                                ?.receiveEvent(id, "topVideoEnd", event)
+                        }
+                        else -> {}
+                    }
+                }
+
+                override fun onTracksChanged(tracks: Tracks) {
+                    if (isPrepared) {
+                        val event = Arguments.createMap().apply {
+                            val dur = player.duration
+                            putDouble("duration", if (dur > 0) dur.toDouble() / 1000.0 else 0.0)
+                            putInt("width", videoWidth)
+                            putInt("height", videoHeight)
+                        }
+                        enumerateTracks(tracks, event)
+                        (context as? ReactContext)
+                            ?.getJSModule(RCTEventEmitter::class.java)
+                            ?.receiveEvent(id, "topVideoLoad", event)
+                    }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    val event = Arguments.createMap().apply {
+                        putString("error", error.message ?: "Playback error: ${error.errorCodeName}")
+                    }
+                    (context as? ReactContext)
+                        ?.getJSModule(RCTEventEmitter::class.java)
+                        ?.receiveEvent(id, "topVideoError", event)
+                }
+            })
+
+            // Auto-detect sidecar subtitle files (.srt, .vtt, .ass, .ssa) in same directory
+            val subtitleConfigs = mutableListOf<MediaItem.SubtitleConfiguration>()
+            try {
+                val videoFile = File(cleanPath)
+                if (videoFile.exists() && videoFile.parentFile != null) {
+                    val parent = videoFile.parentFile
+                    val baseName = videoFile.nameWithoutExtension
+                    parent?.listFiles()?.forEach { file ->
+                        val name = file.name
+                        val ext = file.extension.lowercase(Locale.ROOT)
+                        if ((ext == "srt" || ext == "vtt" || ext == "ass" || ext == "ssa") &&
+                            (name.startsWith(baseName, ignoreCase = true) || name.contains("sub", ignoreCase = true))
+                        ) {
+                            val mime = when (ext) {
+                                "vtt" -> MimeTypes.TEXT_VTT
+                                "ass", "ssa" -> MimeTypes.TEXT_SSA
+                                else -> MimeTypes.APPLICATION_SUBRIP
+                            }
+                            val subLabel = if (name.equals("$baseName.$ext", ignoreCase = true)) {
+                                "External (${ext.uppercase(Locale.ROOT)})"
+                            } else {
+                                val extra = name.removePrefix(baseName).removeSuffix(".$ext").trim('.', '-', '_', ' ')
+                                if (extra.isNotEmpty()) "External ($extra)" else "External (${ext.uppercase(Locale.ROOT)})"
+                            }
+                            val subConfig = MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
+                                .setMimeType(mime)
+                                .setLanguage(subLabel)
+                                .setLabel(subLabel)
+                                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                                .build()
+                            subtitleConfigs.add(subConfig)
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+
+            val mediaItemBuilder = MediaItem.Builder().setUri(uri)
+            if (subtitleConfigs.isNotEmpty()) {
+                mediaItemBuilder.setSubtitleConfigurations(subtitleConfigs)
+            }
+            val mediaItem = mediaItemBuilder.build()
+
+            player.setMediaItem(mediaItem)
+            player.prepare()
         } catch (e: Exception) {
             val event = Arguments.createMap().apply {
                 putString("error", e.message ?: "Failed to open video")
@@ -217,17 +309,111 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
         }
     }
 
-    fun setPaused(paused: Boolean) {
-        isPaused = paused
-        try {
-            if (mediaPlayer != null && isPrepared) {
-                if (paused && mediaPlayer!!.isPlaying) {
-                    mediaPlayer!!.pause()
-                } else if (!paused && !mediaPlayer!!.isPlaying) {
-                    mediaPlayer!!.start()
+    private fun enumerateTracks(tracks: Tracks, event: com.facebook.react.bridge.WritableMap) {
+        audioTrackRefs.clear()
+        textTrackRefs.clear()
+
+        val audioTracks = Arguments.createArray()
+        val subtitleTracks = Arguments.createArray()
+        var audioIdx = 0
+        var subIdx = 0
+
+        for (group in tracks.groups) {
+            if (group.type == C.TRACK_TYPE_AUDIO) {
+                for (i in 0 until group.length) {
+                    val format = group.getTrackFormat(i)
+                    val rawLang = format.language?.takeIf { it.isNotEmpty() && it != "und" }
+                    val resolvedLang = rawLang?.let { code ->
+                        try {
+                            val loc = Locale(code)
+                            val display = loc.getDisplayLanguage(Locale.getDefault())
+                            if (display.isNotEmpty()) display else code
+                        } catch (_: Exception) {
+                            code
+                        }
+                    }
+
+                    var label = format.label?.takeIf { it.isNotEmpty() }
+                        ?: resolvedLang
+                        ?: "Audio Track ${audioIdx + 1}"
+
+                    if (format.channelCount > 0) {
+                        val ch = when (format.channelCount) {
+                            1 -> "Mono"
+                            2 -> "Stereo"
+                            6 -> "5.1 Surround"
+                            8 -> "7.1 Surround"
+                            else -> "${format.channelCount}ch"
+                        }
+                        if (!label.contains(ch, ignoreCase = true)) {
+                            label = "$label ($ch)"
+                        }
+                    }
+
+                    audioTrackRefs.add(TrackRef(group, i, label))
+
+                    val map = Arguments.createMap()
+                    map.putInt("index", audioIdx)
+                    map.putString("language", label)
+                    audioTracks.pushMap(map)
+                    audioIdx++
+                }
+            } else if (group.type == C.TRACK_TYPE_TEXT) {
+                for (i in 0 until group.length) {
+                    val format = group.getTrackFormat(i)
+                    val rawLang = format.language?.takeIf { it.isNotEmpty() && it != "und" }
+                    val resolvedLang = rawLang?.let { code ->
+                        try {
+                            val loc = Locale(code)
+                            val display = loc.getDisplayLanguage(Locale.getDefault())
+                            if (display.isNotEmpty()) display else code
+                        } catch (_: Exception) {
+                            code
+                        }
+                    }
+
+                    val label = format.label?.takeIf { it.isNotEmpty() }
+                        ?: resolvedLang
+                        ?: "Subtitle ${subIdx + 1}"
+
+                    textTrackRefs.add(TrackRef(group, i, label))
+
+                    val map = Arguments.createMap()
+                    map.putInt("index", subIdx)
+                    map.putString("language", label)
+                    subtitleTracks.pushMap(map)
+                    subIdx++
                 }
             }
+        }
+
+        event.putArray("audioTracks", audioTracks)
+        event.putArray("subtitleTracks", subtitleTracks)
+        event.putBoolean("hasSubtitles", subtitleTracks.size() > 0)
+
+        // Automatically apply targeted tracks or auto-select first subtitle track
+        if (targetAudioTrackIndex >= 0) {
+            selectAudioTrack(targetAudioTrackIndex)
+        }
+        if (targetSubtitleTrackIndex >= 0) {
+            selectSubtitleTrack(targetSubtitleTrackIndex)
+        } else if (textTrackRefs.isNotEmpty()) {
+            selectSubtitleTrack(0)
+        }
+    }
+
+    private fun setupLoudnessEnhancer(audioSessionId: Int) {
+        try {
+            if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
+                loudnessEnhancer?.release()
+                loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+            }
         } catch (_: Exception) {}
+    }
+
+    fun setPaused(paused: Boolean) {
+        isPaused = paused
+        exoPlayer?.playWhenReady = !paused
     }
 
     private var lastSeekMs: Long = -1L
@@ -237,56 +423,46 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
         val ms = (seconds * 1000).toLong()
         if (ms == lastSeekMs && isSeeking) return
         lastSeekMs = ms
-        try {
-            if (mediaPlayer != null && isPrepared) {
-                isSeeking = true
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    mediaPlayer!!.seekTo(ms, MediaPlayer.SEEK_CLOSEST_SYNC)
-                } else {
-                    mediaPlayer!!.seekTo(ms.toInt())
-                }
-            } else {
-                pendingSeek = seconds
+        val player = exoPlayer
+        if (player != null && isPrepared) {
+            isSeeking = true
+            player.seekTo(ms)
+            val dur = player.duration
+            val event = Arguments.createMap().apply {
+                putDouble("currentTime", seconds)
+                putDouble("duration", if (dur > 0) dur.toDouble() / 1000.0 else 0.0)
             }
-        } catch (_: Exception) {
+            (context as? ReactContext)
+                ?.getJSModule(RCTEventEmitter::class.java)
+                ?.receiveEvent(id, "topVideoProgress", event)
             isSeeking = false
+        } else {
+            pendingSeek = seconds
         }
     }
 
     fun setSpeed(speed: Float) {
         playbackSpeed = speed
-        applyPlaybackSpeed()
-    }
-
-    private fun applyPlaybackSpeed() {
-        try {
-            if (mediaPlayer != null && isPrepared) {
-                val params = mediaPlayer!!.playbackParams ?: PlaybackParams()
-                params.speed = playbackSpeed
-                mediaPlayer!!.playbackParams = params
-            }
-        } catch (_: Exception) {}
+        exoPlayer?.playbackParameters = PlaybackParameters(speed)
     }
 
     fun setVolume(vol: Float) {
         volumeLevel = vol
-        applyVolumeBoost()
+        applyVolume()
     }
 
-    private fun applyVolumeBoost() {
+    private fun applyVolume() {
+        val player = exoPlayer ?: return
         try {
-            if (mediaPlayer != null) {
-                if (volumeLevel <= 1.0f) {
-                    mediaPlayer!!.setVolume(volumeLevel, volumeLevel)
-                    loudnessEnhancer?.enabled = false
-                } else {
-                    mediaPlayer!!.setVolume(1.0f, 1.0f)
-                    // Up to +2000 mB (+20 dB) for 200% volume
-                    loudnessEnhancer?.apply {
-                        val gainMb = ((volumeLevel - 1.0f) * 2000).toInt()
-                        setTargetGain(gainMb)
-                        enabled = true
-                    }
+            if (volumeLevel <= 1.0f) {
+                player.volume = volumeLevel.coerceIn(0f, 1f)
+                loudnessEnhancer?.enabled = false
+            } else {
+                player.volume = 1.0f
+                loudnessEnhancer?.apply {
+                    val gainMb = ((volumeLevel - 1.0f) * 2000).toInt()
+                    setTargetGain(gainMb)
+                    enabled = true
                 }
             }
         } catch (_: Exception) {}
@@ -294,9 +470,7 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
 
     fun setLoop(loop: Boolean) {
         isLoop = loop
-        try {
-            mediaPlayer?.isLooping = loop
-        } catch (_: Exception) {}
+        exoPlayer?.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
     }
 
     fun setResizeMode(mode: String) {
@@ -305,9 +479,62 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
     }
 
     fun selectAudioTrack(index: Int) {
+        targetAudioTrackIndex = index
+        val player = exoPlayer ?: return
         try {
-            mediaPlayer?.selectTrack(index)
-        } catch (_: Exception) {}
+            if (index in 0 until audioTrackRefs.size) {
+                val ref = audioTrackRefs[index]
+                val builder = player.trackSelectionParameters.buildUpon()
+                builder.clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                builder.setOverrideForType(
+                    TrackSelectionOverride(ref.group.mediaTrackGroup, listOf(ref.formatIndex))
+                )
+                ref.group.getTrackFormat(ref.formatIndex).language?.let {
+                    builder.setPreferredAudioLanguage(it)
+                }
+                player.trackSelectionParameters = builder.build()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("NexVideoView", "Failed to switch audio track to $index", e)
+        }
+    }
+
+    fun selectSubtitleTrack(index: Int) {
+        targetSubtitleTrackIndex = index
+        val player = exoPlayer ?: return
+        try {
+            val builder = player.trackSelectionParameters.buildUpon()
+            builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            if (index < 0 || textTrackRefs.isEmpty() || index >= textTrackRefs.size) {
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                player.trackSelectionParameters = builder.build()
+                post {
+                    subtitleView?.visibility = View.GONE
+                    subtitleView?.setCues(emptyList())
+                    val event = Arguments.createMap().apply { putString("text", "") }
+                    (context as? ReactContext)
+                        ?.getJSModule(RCTEventEmitter::class.java)
+                        ?.receiveEvent(id, "topSubtitleCue", event)
+                }
+            } else {
+                val ref = textTrackRefs[index]
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                builder.setOverrideForType(
+                    TrackSelectionOverride(ref.group.mediaTrackGroup, listOf(ref.formatIndex))
+                )
+                ref.group.getTrackFormat(ref.formatIndex).language?.let {
+                    builder.setPreferredTextLanguage(it)
+                }
+                player.trackSelectionParameters = builder.build()
+                post {
+                    subtitleView?.visibility = View.VISIBLE
+                    subtitleView?.bringToFront()
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("NexVideoView", "Failed to switch subtitle track to $index", e)
+        }
     }
 
     private fun adjustAspectRatio() {
@@ -354,14 +581,18 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
 
     fun releasePlayer() {
         handler.removeCallbacks(progressRunnable)
+        subtitleView?.setCues(emptyList())
+        subtitleView?.visibility = View.GONE
+        audioTrackRefs.clear()
+        textTrackRefs.clear()
         try {
             loudnessEnhancer?.release()
             loudnessEnhancer = null
         } catch (_: Exception) {}
         try {
-            mediaPlayer?.stop()
-            mediaPlayer?.release()
-            mediaPlayer = null
+            exoPlayer?.stop()
+            exoPlayer?.release()
+            exoPlayer = null
         } catch (_: Exception) {}
         isPrepared = false
     }

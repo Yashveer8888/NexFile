@@ -5,10 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Color
-import android.graphics.DashPathEffect
+import android.graphics.*
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -23,21 +20,13 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.AlphaAnimation
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.Toast
+import android.view.animation.Animation
+import android.view.animation.LinearInterpolator
+import android.view.animation.TranslateAnimation
+import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.Camera
-import androidx.camera.core.CameraControl
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.FocusMeteringAction
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
@@ -48,8 +37,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -58,30 +46,45 @@ class DocumentScannerActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private var imageCapture: ImageCapture? = null
     private var cameraControl: CameraControl? = null
-    private var camera: Camera? = null
+    private var camera: androidx.camera.core.Camera? = null
 
     private lateinit var previewView: PreviewView
     private lateinit var overlayContainer: FrameLayout
     private lateinit var flashOverlay: View
     private lateinit var gridView: View
     private lateinit var frameGuideView: View
-    private lateinit var instructionText: TextView
-    private lateinit var counterBadgeText: TextView
+
+    // Center Guides & Overlays
+    private lateinit var searchingDocPill: TextView
+    private lateinit var bookInstructionText: TextView
+    private lateinit var idCardIntroCard: LinearLayout
+    private lateinit var qrTorchButton: LinearLayout
+    private lateinit var qrLaserLine: View
+
+    // Bottom Controls
+    private lateinit var captureRow: LinearLayout
+    private lateinit var leftActionButton: FrameLayout
+    private lateinit var rightActionButton: LinearLayout
     private lateinit var thumbnailImage: ImageView
+    private lateinit var counterBadgeText: TextView
     private lateinit var flashButtonText: TextView
 
-    // Mode Selector
+    // Mode Selector: Book | To Text | Docs | ID Card | QR Code
     private val modes = listOf(
-        "doc" to "Document",
-        "idcard" to "ID Card",
         "book" to "Book",
-        "whiteboard" to "Whiteboard",
+        "totext" to "To Text",
+        "doc" to "Docs",
+        "idcard" to "ID Card",
         "qrcode" to "QR Code"
     )
     private val modePills = mutableMapOf<String, TextView>()
-    private var scanMode = "doc" // "doc", "idcard", "book", "whiteboard", "qrcode"
+    private var scanMode = "doc" // "book", "totext", "doc", "idcard", "qrcode"
 
-    // Session Scanned Paths - Starts 100% fresh for each scan session
+    // ID Card sub-modes: Single Side | ID Card | Passport
+    private var idCardSubMode = "idcard" // "single", "idcard", "passport"
+    private var isIdCardLiveScanning = false
+
+    // Session Captured Paths
     private val capturedPaths = ArrayList<String>()
 
     private var flashModeIndex = 0 // 0: Auto, 1: On, 2: Torch, 3: Off
@@ -91,13 +94,22 @@ class DocumentScannerActivity : AppCompatActivity() {
     companion object {
         private const val REQUEST_CAMERA_PERMISSION = 1001
         private const val REQUEST_GALLERY_PICK = 1002
+        private const val REQUEST_FILES_PICK = 1003
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val passedMode = intent.getStringExtra("mode") ?: "doc"
-        scanMode = if (passedMode == "batch" || passedMode == "document") "doc" else passedMode
+        scanMode = when (passedMode) {
+            "batch", "document" -> "doc"
+            "idcard" -> "idcard"
+            "book" -> "book"
+            "qrcode" -> "qrcode"
+            "totext" -> "totext"
+            else -> "doc"
+        }
+
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         initUi()
@@ -160,7 +172,7 @@ class DocumentScannerActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
         }
 
-        // 1. Live Camera PreviewView
+        // 1. Live Camera Preview
         previewView = PreviewView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -177,7 +189,7 @@ class DocumentScannerActivity : AppCompatActivity() {
         }
         root.addView(gridView)
 
-        // 3. Dynamic Frame Guide based on Mode (Doc, ID Card, Book, Whiteboard, QR)
+        // 3. Dynamic Frame Guide View
         frameGuideView = createDocumentFrameGuide()
         root.addView(frameGuideView)
 
@@ -203,31 +215,62 @@ class DocumentScannerActivity : AppCompatActivity() {
             )
         }
 
-        // Top Toolbar (Close, Title, Grid, Flash)
-        val topToolbar = createTopToolbar()
-        overlayContainer.addView(topToolbar)
+        // Top Bar (Flash, HD, Color, Grid, Settings)
+        val topBar = createTopBar()
+        overlayContainer.addView(topBar)
 
-        // Instruction Text (Center Top below toolbar)
-        instructionText = TextView(this).apply {
+        // Center Elements:
+        // A) "Searching doc..." pill for Docs mode
+        searchingDocPill = TextView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER_HORIZONTAL or Gravity.TOP
-            ).apply {
-                topMargin = dpToPx(85)
+                Gravity.CENTER
+            )
+            text = "Searching doc..."
+            setTextColor(Color.parseColor("#1E293B"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dpToPx(24), dpToPx(10), dpToPx(24), dpToPx(10))
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dpToPx(24).toFloat()
             }
-            text = getInstructionForMode()
+            visibility = if (scanMode == "doc" && capturedPaths.isEmpty()) View.VISIBLE else View.GONE
+        }
+        overlayContainer.addView(searchingDocPill)
+
+        // B) Book mode rotated guidance text
+        bookInstructionText = TextView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER_VERTICAL or Gravity.START
+            ).apply {
+                marginStart = dpToPx(12)
+            }
+            text = "Please hold the device horizontally and keep it parallel to the book, match the green line with the book's binding line"
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(dpToPx(16), dpToPx(7), dpToPx(16), dpToPx(7))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#99000000"))
-                cornerRadius = dpToPx(18).toFloat()
+                cornerRadius = dpToPx(8).toFloat()
             }
+            maxWidth = dpToPx(220)
+            visibility = if (scanMode == "book") View.VISIBLE else View.GONE
         }
-        overlayContainer.addView(instructionText)
+        overlayContainer.addView(bookInstructionText)
 
-        // Bottom Controls Container (Modes bar + Capture row)
+        // C) QR Code Turn Light On button
+        qrTorchButton = createQrTorchButton()
+        overlayContainer.addView(qrTorchButton)
+
+        // D) ID Card Intro Card (Example on A4 paper)
+        idCardIntroCard = createIdCardIntroCard()
+        overlayContainer.addView(idCardIntroCard)
+
+        // Bottom Section: Modes Selector + Capture Row
         val bottomSection = createBottomSection()
         overlayContainer.addView(bottomSection)
 
@@ -235,96 +278,264 @@ class DocumentScannerActivity : AppCompatActivity() {
         setContentView(root)
     }
 
-    private fun getInstructionForMode(): String {
-        return when (scanMode) {
-            "idcard" -> if (capturedPaths.isEmpty()) "Scan Front Side of ID Card" else "Now flip and scan Back Side"
-            "book" -> "Align book across center divider"
-            "whiteboard" -> "Position whiteboard / presentation screen"
-            "qrcode" -> "Point camera at QR code or barcode"
-            else -> if (capturedPaths.isEmpty()) "Position document within frame" else "${capturedPaths.size} pages captured. Tap to scan next."
-        }
-    }
-
-    private fun createTopToolbar(): LinearLayout {
+    // Top Bar Matching Image 2 & 3
+    private fun createTopBar(): LinearLayout {
         return LinearLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(65),
+                dpToPx(56),
                 Gravity.TOP
             ).apply {
-                topMargin = dpToPx(16)
+                topMargin = dpToPx(12)
             }
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dpToPx(16), 0, dpToPx(16), 0)
 
-            // Back / Close Button (Opens Resume or Discard dialog)
-            val closeBtn = TextView(this@DocumentScannerActivity).apply {
-                text = "✕"
+            // 1. Flash Toggle
+            flashButtonText = TextView(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
+                gravity = Gravity.CENTER
+                text = "⚡A"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                setOnClickListener { cycleFlashMode() }
+            }
+            addView(flashButtonText)
+
+            // Spacer
+            addView(View(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+            })
+
+            // 2. HD Quality Indicator
+            val hdBadge = TextView(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(22)).apply {
+                    marginEnd = dpToPx(16)
+                }
+                gravity = Gravity.CENTER
+                text = "HD"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                typeface = Typeface.DEFAULT_BOLD
+                background = GradientDrawable().apply {
+                    setColor(Color.TRANSPARENT)
+                    setStroke(dpToPx(1), Color.WHITE)
+                    cornerRadius = dpToPx(4).toFloat()
+                }
+            }
+            addView(hdBadge)
+
+            // 3. Color / Filter Icon (3 overlapping circles symbol)
+            val filterBtn = TextView(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(38)).apply {
+                    marginEnd = dpToPx(12)
+                }
+                gravity = Gravity.CENTER
+                text = "☵"
                 setTextColor(Color.WHITE)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-                setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#66000000"))
-                    cornerRadius = dpToPx(20).toFloat()
+                setOnClickListener {
+                    Toast.makeText(this@DocumentScannerActivity, "Color enhancement auto-applied", Toast.LENGTH_SHORT).show()
                 }
-                setOnClickListener { handleExit() }
             }
-            addView(closeBtn)
+            addView(filterBtn)
 
-            // Title
-            val titleText = TextView(this@DocumentScannerActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = dpToPx(12)
-                }
-                text = "Doc Scanner"
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-            }
-            addView(titleText)
-
-            // Grid Toggle Button
+            // 4. Grid Icon
             val gridBtn = TextView(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(38)).apply {
+                    marginEnd = dpToPx(12)
+                }
+                gravity = Gravity.CENTER
                 text = "▦"
                 setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-                setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(8))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#66000000"))
-                    cornerRadius = dpToPx(20).toFloat()
-                }
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
                 setOnClickListener {
                     isGridVisible = !isGridVisible
                     gridView.visibility = if (isGridVisible) View.VISIBLE else View.GONE
-                    Toast.makeText(
-                        this@DocumentScannerActivity,
-                        if (isGridVisible) "Grid Enabled" else "Grid Disabled",
-                        Toast.LENGTH_SHORT
-                    ).show()
                 }
             }
             addView(gridBtn)
 
-            // Flash Mode Button
-            flashButtonText = TextView(this@DocumentScannerActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    marginStart = dpToPx(8)
-                }
-                text = "⚡ Auto"
+            // 5. Settings Gear
+            val settingsBtn = TextView(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(38))
+                gravity = Gravity.CENTER
+                text = "⚙"
                 setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(8))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#66000000"))
-                    cornerRadius = dpToPx(20).toFloat()
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                setOnClickListener {
+                    Toast.makeText(this@DocumentScannerActivity, "OKEN Camera Settings", Toast.LENGTH_SHORT).show()
                 }
-                setOnClickListener { cycleFlashMode() }
             }
-            addView(flashButtonText)
+            addView(settingsBtn)
+        }
+    }
+
+    // QR Mode Torch Button
+    private fun createQrTorchButton(): LinearLayout {
+        return LinearLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dpToPx(38),
+                Gravity.CENTER_HORIZONTAL
+            ).apply {
+                topMargin = dpToPx(460)
+            }
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dpToPx(18), 0, dpToPx(18), 0)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#66333333"))
+                cornerRadius = dpToPx(19).toFloat()
+            }
+            visibility = if (scanMode == "qrcode") View.VISIBLE else View.GONE
+
+            val icon = TextView(this@DocumentScannerActivity).apply {
+                text = "🔦"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setPadding(0, 0, dpToPx(6), 0)
+            }
+            val label = TextView(this@DocumentScannerActivity).apply {
+                text = "Turn light on"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            }
+            addView(icon)
+            addView(label)
+
+            setOnClickListener {
+                cycleFlashMode()
+            }
+        }
+    }
+
+    // ID Card Intro Graphic Card (Image 5)
+    private fun createIdCardIntroCard(): LinearLayout {
+        return LinearLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                dpToPx(320),
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER_HORIZONTAL
+            ).apply {
+                topMargin = dpToPx(80)
+            }
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            visibility = if (scanMode == "idcard" && !isIdCardLiveScanning && capturedPaths.isEmpty()) View.VISIBLE else View.GONE
+
+            // A4 Paper Graphic with ID Front & Back
+            val paperFrame = LinearLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dpToPx(340)
+                )
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dpToPx(20), dpToPx(16), dpToPx(20), dpToPx(16))
+                background = GradientDrawable().apply {
+                    setColor(Color.WHITE)
+                    cornerRadius = dpToPx(12).toFloat()
+                }
+
+                // Header tag: A4 paper example
+                val tag = TextView(this@DocumentScannerActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        gravity = Gravity.END
+                        bottomMargin = dpToPx(8)
+                    }
+                    text = "A4 paper example"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setPadding(dpToPx(8), dpToPx(2), dpToPx(8), dpToPx(2))
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#666666"))
+                        cornerRadius = dpToPx(10).toFloat()
+                    }
+                }
+                addView(tag)
+
+                // ID Card Front Mockup
+                val frontCard = LinearLayout(this@DocumentScannerActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(220), dpToPx(100)).apply {
+                        bottomMargin = dpToPx(14)
+                    }
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#B2DFDB"))
+                        cornerRadius = dpToPx(8).toFloat()
+                    }
+                    val t = TextView(this@DocumentScannerActivity).apply {
+                        text = "🪪 ID CARD (FRONT)"
+                        setTextColor(Color.parseColor("#004D40"))
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                        typeface = Typeface.DEFAULT_BOLD
+                    }
+                    addView(t)
+                }
+                addView(frontCard)
+
+                // ID Card Back Mockup
+                val backCard = LinearLayout(this@DocumentScannerActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(220), dpToPx(100)).apply {
+                        bottomMargin = dpToPx(12)
+                    }
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#CFD8DC"))
+                        cornerRadius = dpToPx(8).toFloat()
+                    }
+                    val t = TextView(this@DocumentScannerActivity).apply {
+                        text = "💳 ID CARD (BACK)"
+                        setTextColor(Color.parseColor("#37474F"))
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                        typeface = Typeface.DEFAULT_BOLD
+                    }
+                    addView(t)
+                }
+                addView(backCard)
+
+                // Description text
+                val desc = TextView(this@DocumentScannerActivity).apply {
+                    text = "A must-have feature! You can make a 2-sided e-copy of an ID card in 1 min. 100% ready for printing. Watermark protection is also available."
+                    setTextColor(Color.parseColor("#666666"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    gravity = Gravity.CENTER
+                }
+                addView(desc)
+            }
+            addView(paperFrame)
+
+            // Green "Make it now" Button
+            val makeBtn = TextView(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dpToPx(46)
+                ).apply {
+                    topMargin = dpToPx(16)
+                }
+                gravity = Gravity.CENTER
+                text = "Make it now"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                typeface = Typeface.DEFAULT_BOLD
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#00C853")) // OKEN Green
+                    cornerRadius = dpToPx(8).toFloat()
+                }
+                setOnClickListener {
+                    isIdCardLiveScanning = true
+                    idCardIntroCard.visibility = View.GONE
+                    frameGuideView.invalidate()
+                    Toast.makeText(this@DocumentScannerActivity, "Position Front Side of ID Card", Toast.LENGTH_SHORT).show()
+                }
+            }
+            addView(makeBtn)
         }
     }
 
@@ -335,16 +546,16 @@ class DocumentScannerActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM
             ).apply {
-                bottomMargin = dpToPx(16)
+                bottomMargin = dpToPx(20)
             }
             orientation = LinearLayout.VERTICAL
 
-            // 1. HORIZONTAL MODE SELECTOR: Document | ID Card | Book | Whiteboard | QR Code
+            // 1. HORIZONTAL MODE SELECTOR
             val modeBar = createModeSelectorBar()
             addView(modeBar)
 
-            // 2. CAPTURE ROW: Gallery | Shutter Button | Thumbnail & Finish
-            val captureRow = createCaptureRow()
+            // 2. CAPTURE ROW
+            captureRow = createCaptureRow()
             addView(captureRow)
         }
     }
@@ -353,9 +564,9 @@ class DocumentScannerActivity : AppCompatActivity() {
         val scroll = HorizontalScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(44)
+                dpToPx(42)
             ).apply {
-                bottomMargin = dpToPx(12)
+                bottomMargin = dpToPx(8)
             }
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_NEVER
@@ -368,21 +579,21 @@ class DocumentScannerActivity : AppCompatActivity() {
             )
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dpToPx(16), 0, dpToPx(16), 0)
+            setPadding(dpToPx(24), 0, dpToPx(24), 0)
         }
 
         for ((id, label) in modes) {
             val pill = TextView(this).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                    dpToPx(34)
+                    ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    marginEnd = dpToPx(8)
+                    marginStart = dpToPx(14)
+                    marginEnd = dpToPx(14)
                 }
                 text = label
                 gravity = Gravity.CENTER
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-                setPadding(dpToPx(16), 0, dpToPx(16), 0)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
 
                 setOnClickListener {
                     selectMode(id)
@@ -401,8 +612,15 @@ class DocumentScannerActivity : AppCompatActivity() {
         if (scanMode == newMode) return
         scanMode = newMode
         updateModePillsUi()
+
+        // Update Overlays
+        searchingDocPill.visibility = if (scanMode == "doc" && capturedPaths.isEmpty()) View.VISIBLE else View.GONE
+        bookInstructionText.visibility = if (scanMode == "book") View.VISIBLE else View.GONE
+        qrTorchButton.visibility = if (scanMode == "qrcode") View.VISIBLE else View.GONE
+        idCardIntroCard.visibility = if (scanMode == "idcard" && !isIdCardLiveScanning && capturedPaths.isEmpty()) View.VISIBLE else View.GONE
+
         frameGuideView.invalidate()
-        instructionText.text = getInstructionForMode()
+        updateCaptureRowUi()
 
         try {
             val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
@@ -415,25 +633,18 @@ class DocumentScannerActivity : AppCompatActivity() {
         } catch (_: Exception) {}
     }
 
+    // Exact OKEN styling: active mode is vibrant green text (#00C853), inactive is #CCCCCC
     private fun updateModePillsUi() {
         for ((id, pill) in modePills) {
             val isSelected = id == scanMode
             if (isSelected) {
-                pill.setTextColor(Color.WHITE)
-                pill.typeface = android.graphics.Typeface.DEFAULT_BOLD
-                pill.background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#2563EB")) // Active Blue Pill
-                    cornerRadius = dpToPx(17).toFloat()
-                }
+                pill.setTextColor(Color.parseColor("#00C853")) // OKEN Green
+                pill.typeface = Typeface.DEFAULT_BOLD
             } else {
                 pill.setTextColor(Color.parseColor("#CCCCCC"))
-                pill.typeface = android.graphics.Typeface.DEFAULT
-                pill.background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#55000000"))
-                    cornerRadius = dpToPx(17).toFloat()
-                    setStroke(dpToPx(1), Color.parseColor("#33FFFFFF"))
-                }
+                pill.typeface = Typeface.DEFAULT
             }
+            pill.background = null
         }
     }
 
@@ -441,34 +652,19 @@ class DocumentScannerActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(100)
+                dpToPx(90)
             )
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dpToPx(24), 0, dpToPx(24), 0)
 
-            // 1. Gallery Import Button (Left)
-            val galleryBtn = LinearLayout(this@DocumentScannerActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(dpToPx(65), ViewGroup.LayoutParams.WRAP_CONTENT)
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setOnClickListener { pickFromGallery() }
-
-                val icon = TextView(this@DocumentScannerActivity).apply {
-                    text = "🖼"
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-                }
-                val label = TextView(this@DocumentScannerActivity).apply {
-                    text = "Gallery"
-                    setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                }
-                addView(icon)
-                addView(label)
+            // Left Action Button: ✕ when 0 photos, ↶ when 1+ photos
+            leftActionButton = FrameLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(60), dpToPx(60))
             }
-            addView(galleryBtn)
+            addView(leftActionButton)
 
-            // 2. Center Shutter Button
+            // Center Shutter Button
             val shutterContainer = FrameLayout(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             }
@@ -487,8 +683,8 @@ class DocumentScannerActivity : AppCompatActivity() {
 
                 val shutterInnerBtn = View(this@DocumentScannerActivity).apply {
                     layoutParams = FrameLayout.LayoutParams(
-                        dpToPx(60),
-                        dpToPx(60),
+                        dpToPx(62),
+                        dpToPx(62),
                         Gravity.CENTER
                     )
                     background = GradientDrawable().apply {
@@ -503,84 +699,263 @@ class DocumentScannerActivity : AppCompatActivity() {
             shutterContainer.addView(shutterOuterRing)
             addView(shutterContainer)
 
-            // 3. Right: Review / Finish Button with Live Thumbnail & Counter Badge
-            val doneContainer = LinearLayout(this@DocumentScannerActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(dpToPx(65), ViewGroup.LayoutParams.WRAP_CONTENT)
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setOnClickListener { finishWithResults() }
-
-                val thumbFrame = FrameLayout(this@DocumentScannerActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(dpToPx(46), dpToPx(46))
-                }
-
-                thumbnailImage = ImageView(this@DocumentScannerActivity).apply {
-                    layoutParams = FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    background = GradientDrawable().apply {
-                        setColor(Color.parseColor("#333333"))
-                        cornerRadius = dpToPx(8).toFloat()
-                        setStroke(dpToPx(1), Color.WHITE)
-                    }
-                }
-                thumbFrame.addView(thumbnailImage)
-
-                // Counter Badge (Top Right of thumbnail)
-                counterBadgeText = TextView(this@DocumentScannerActivity).apply {
-                    layoutParams = FrameLayout.LayoutParams(
-                        dpToPx(20),
-                        dpToPx(20),
-                        Gravity.TOP or Gravity.END
-                    )
-                    gravity = Gravity.CENTER
-                    text = "0"
-                    setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.parseColor("#2563EB")) // Vibrant Blue
-                    }
-                    visibility = View.GONE
-                }
-                thumbFrame.addView(counterBadgeText)
-
-                val doneLabel = TextView(this@DocumentScannerActivity).apply {
-                    text = "Finish"
-                    setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                }
-
-                addView(thumbFrame)
-                addView(doneLabel)
+            // Right Action: Import/Import Files when 0 photos, Thumbnail + Count + Arrow when 1+ photos
+            rightActionButton = LinearLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
             }
-            addView(doneContainer)
+            addView(rightActionButton)
+
+            updateCaptureRowUi()
         }
     }
 
-    private fun createGridOverlay(): View {
-        return object : View(this) {
-            private val paint = android.graphics.Paint().apply {
-                color = Color.parseColor("#44FFFFFF")
-                strokeWidth = dpToPx(1).toFloat()
+    private fun updateCaptureRowUi() {
+        leftActionButton.removeAllViews()
+        rightActionButton.removeAllViews()
+
+        if (capturedPaths.isEmpty()) {
+            // LEFT: Close ✕ (Image 2)
+            val closeBtn = TextView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                gravity = Gravity.CENTER
+                text = "✕"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                setOnClickListener { handleExit() }
+            }
+            leftActionButton.addView(closeBtn)
+
+            // RIGHT: Import & Import Files buttons (Image 2)
+            val importBtn = LinearLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(55), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginEnd = dpToPx(10)
+                }
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setOnClickListener { pickFromGallery() }
+
+                val icon = TextView(this@DocumentScannerActivity).apply {
+                    text = "🖼"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                }
+                val label = TextView(this@DocumentScannerActivity).apply {
+                    text = "Import"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                }
+                addView(icon)
+                addView(label)
+            }
+            rightActionButton.addView(importBtn)
+
+            val importFilesBtn = LinearLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(60), ViewGroup.LayoutParams.WRAP_CONTENT)
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setOnClickListener { pickFromGallery() }
+
+                val icon = TextView(this@DocumentScannerActivity).apply {
+                    text = "📄↩"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                }
+                val label = TextView(this@DocumentScannerActivity).apply {
+                    text = "Import Files"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+                }
+                addView(icon)
+                addView(label)
+            }
+            rightActionButton.addView(importFilesBtn)
+        } else {
+            // LEFT: Undo / Retake ↶ (Image 3)
+            val undoBtn = TextView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                gravity = Gravity.CENTER
+                text = "↶"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
+                setOnClickListener {
+                    if (capturedPaths.isNotEmpty()) {
+                        val last = capturedPaths.removeAt(capturedPaths.size - 1)
+                        try { File(last).delete() } catch (_: Exception) {}
+                        Toast.makeText(this@DocumentScannerActivity, "Removed last capture", Toast.LENGTH_SHORT).show()
+                        updateCaptureRowUi()
+                        frameGuideView.invalidate()
+                    }
+                }
+            }
+            leftActionButton.addView(undoBtn)
+
+            // RIGHT: Thumbnail + Green Count Badge + Arrow > (Image 3)
+            val thumbContainer = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(48), dpToPx(48))
+                setOnClickListener { finishWithResults() }
             }
 
-            override fun onDraw(canvas: android.graphics.Canvas) {
+            thumbnailImage = ImageView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#333333"))
+                    cornerRadius = dpToPx(6).toFloat()
+                    setStroke(dpToPx(1), Color.WHITE)
+                }
+            }
+            thumbContainer.addView(thumbnailImage)
+
+            // Circular Green Badge showing Count
+            counterBadgeText = TextView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    dpToPx(20),
+                    dpToPx(20),
+                    Gravity.TOP or Gravity.END
+                )
+                gravity = Gravity.CENTER
+                text = "${capturedPaths.size}"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                typeface = Typeface.DEFAULT_BOLD
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor("#00C853")) // OKEN Green
+                }
+            }
+            thumbContainer.addView(counterBadgeText)
+
+            rightActionButton.addView(thumbContainer)
+
+            // Arrow > to proceed to editor
+            val arrowNext = TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    dpToPx(26),
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                ).apply {
+                    marginStart = dpToPx(6)
+                }
+                gravity = Gravity.CENTER
+                text = "›"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
+                setOnClickListener { finishWithResults() }
+            }
+            rightActionButton.addView(arrowNext)
+
+            // Load last thumbnail image
+            if (capturedPaths.isNotEmpty()) {
+                val lastPath = capturedPaths.last()
+                try {
+                    val bmp = BitmapFactory.decodeFile(lastPath)
+                    thumbnailImage.setImageBitmap(bmp)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    // Viewfinder Overlays
+    private fun createDocumentFrameGuide(): View {
+        return object : View(this) {
+            private val greenFramePaint = Paint().apply {
+                color = Color.parseColor("#00C853") // OKEN Green
+                style = Paint.Style.STROKE
+                strokeWidth = dpToPx(2).toFloat()
+            }
+
+            private val greenDashedPaint = Paint().apply {
+                color = Color.parseColor("#00C853")
+                style = Paint.Style.STROKE
+                strokeWidth = dpToPx(3).toFloat()
+                pathEffect = DashPathEffect(floatArrayOf(30f, 20f), 0f)
+            }
+
+            private val cornerPaint = Paint().apply {
+                color = Color.WHITE
+                style = Paint.Style.STROKE
+                strokeWidth = dpToPx(4).toFloat()
+            }
+
+            private val qrLaserPaint = Paint().apply {
+                color = Color.parseColor("#00C853")
+                style = Paint.Style.STROKE
+                strokeWidth = dpToPx(3).toFloat()
+                maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.NORMAL)
+            }
+
+            override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
                 val w = width.toFloat()
                 val h = height.toFloat()
 
-                // Horizontal lines (1/3 and 2/3)
-                canvas.drawLine(0f, h / 3f, w, h / 3f, paint)
-                canvas.drawLine(0f, 2f * h / 3f, w, 2f * h / 3f, paint)
+                when (scanMode) {
+                    "book" -> {
+                        // Horizontal dashed green line across the center (Image 1)
+                        val centerY = h / 2f
+                        canvas.drawLine(0f, centerY, w, centerY, greenDashedPaint)
+                    }
+                    "qrcode" -> {
+                        // Square target box with 4 white corner brackets (Image 4)
+                        val size = dpToPx(240).toFloat()
+                        val left = (w - size) / 2f
+                        val right = left + size
+                        val top = (h - size) / 2f - dpToPx(30)
+                        val bottom = top + size
+                        val cLen = dpToPx(30).toFloat()
 
-                // Vertical lines (1/3 and 2/3)
-                canvas.drawLine(w / 3f, 0f, w / 3f, h, paint)
-                canvas.drawLine(2f * w / 3f, 0f, 2f * w / 3f, h, paint)
+                        // Top-Left
+                        canvas.drawLine(left, top, left + cLen, top, cornerPaint)
+                        canvas.drawLine(left, top, left, top + cLen, cornerPaint)
+                        // Top-Right
+                        canvas.drawLine(right, top, right - cLen, top, cornerPaint)
+                        canvas.drawLine(right, top, right, top + cLen, cornerPaint)
+                        // Bottom-Left
+                        canvas.drawLine(left, bottom, left + cLen, bottom, cornerPaint)
+                        canvas.drawLine(left, bottom, left, bottom - cLen, cornerPaint)
+                        // Bottom-Right
+                        canvas.drawLine(right, bottom, right - cLen, bottom, cornerPaint)
+                        canvas.drawLine(right, bottom, right, bottom - cLen, cornerPaint)
+
+                        // Center green laser line
+                        val laserY = top + size / 2f
+                        canvas.drawLine(left + dpToPx(8), laserY, right - dpToPx(8), laserY, qrLaserPaint)
+                    }
+                    "idcard" -> {
+                        if (isIdCardLiveScanning) {
+                            // Standard ID Card Frame
+                            val cardW = w - dpToPx(36).toFloat() * 2
+                            val cardH = cardW / 1.586f
+                            val top = (h - cardH) / 2f - dpToPx(20)
+                            val bottom = top + cardH
+                            val left = (w - cardW) / 2f
+                            val right = left + cardW
+                            canvas.drawRect(left, top, right, bottom, greenFramePaint)
+                        }
+                    }
+                    else -> {
+                        // Docs / To Text Mode: Clean green document boundary (Image 3)
+                        val marginH = dpToPx(22).toFloat()
+                        val docW = w - marginH * 2
+                        val docH = docW * 1.414f
+                        val top = (h - docH) / 2f - dpToPx(20)
+                        val bottom = top + docH
+                        val left = marginH
+                        val right = left + docW
+
+                        if (capturedPaths.isNotEmpty()) {
+                            canvas.drawRect(left, top, right, bottom, greenFramePaint)
+                        }
+                    }
+                }
             }
         }.apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -590,96 +965,22 @@ class DocumentScannerActivity : AppCompatActivity() {
         }
     }
 
-    private fun createDocumentFrameGuide(): View {
+    private fun createGridOverlay(): View {
         return object : View(this) {
-            private val borderPaint = android.graphics.Paint().apply {
-                color = Color.parseColor("#803B82F6")
-                style = android.graphics.Paint.Style.STROKE
-                strokeWidth = dpToPx(2).toFloat()
+            private val gridPaint = Paint().apply {
+                color = Color.parseColor("#44FFFFFF")
+                style = Paint.Style.STROKE
+                strokeWidth = dpToPx(1).toFloat()
             }
 
-            private val cornerPaint = android.graphics.Paint().apply {
-                color = Color.parseColor("#3B82F6")
-                style = android.graphics.Paint.Style.STROKE
-                strokeWidth = dpToPx(4).toFloat()
-            }
-
-            private val spinePaint = android.graphics.Paint().apply {
-                color = Color.parseColor("#FFD54F")
-                style = android.graphics.Paint.Style.STROKE
-                strokeWidth = dpToPx(2).toFloat()
-                pathEffect = DashPathEffect(floatArrayOf(15f, 15f), 0f)
-            }
-
-            override fun onDraw(canvas: android.graphics.Canvas) {
+            override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
                 val w = width.toFloat()
                 val h = height.toFloat()
-
-                val targetW: Float
-                val targetH: Float
-
-                when (scanMode) {
-                    "idcard" -> {
-                        // Standard Card Ratio (85.6mm x 53.98mm ~ 1.586 : 1)
-                        targetW = w - dpToPx(40).toFloat() * 2
-                        targetH = targetW / 1.586f
-                    }
-                    "book" -> {
-                        // Wide Open Book Box
-                        targetW = w - dpToPx(20).toFloat() * 2
-                        targetH = targetW * 0.72f
-                    }
-                    "whiteboard" -> {
-                        // 16:9 Widescreen Box
-                        targetW = w - dpToPx(24).toFloat() * 2
-                        targetH = targetW * 9f / 16f
-                    }
-                    "qrcode" -> {
-                        // 1:1 Centered Target Box
-                        targetW = dpToPx(230).toFloat()
-                        targetH = targetW
-                    }
-                    else -> {
-                        // A4 Document (1 : 1.414)
-                        val marginH = dpToPx(30).toFloat()
-                        targetW = w - marginH * 2
-                        targetH = targetW * 1.414f
-                    }
-                }
-
-                val top = (h - targetH) / 2f
-                val bottom = top + targetH
-                val left = (w - targetW) / 2f
-                val right = left + targetW
-
-                // Draw bounding box
-                canvas.drawRect(left, top, right, bottom, borderPaint)
-
-                // Corner brackets (length 25dp)
-                val cLen = dpToPx(24).toFloat()
-
-                // Top-Left
-                canvas.drawLine(left, top, left + cLen, top, cornerPaint)
-                canvas.drawLine(left, top, left, top + cLen, cornerPaint)
-
-                // Top-Right
-                canvas.drawLine(right, top, right - cLen, top, cornerPaint)
-                canvas.drawLine(right, top, right, top + cLen, cornerPaint)
-
-                // Bottom-Left
-                canvas.drawLine(left, bottom, left + cLen, bottom, cornerPaint)
-                canvas.drawLine(left, bottom, left, bottom - cLen, cornerPaint)
-
-                // Bottom-Right
-                canvas.drawLine(right, bottom, right - cLen, bottom, cornerPaint)
-                canvas.drawLine(right, bottom, right, bottom - cLen, cornerPaint)
-
-                // If Book Mode: draw dashed spine divider down the center
-                if (scanMode == "book") {
-                    val centerX = w / 2f
-                    canvas.drawLine(centerX, top, centerX, bottom, spinePaint)
-                }
+                canvas.drawLine(w / 3f, 0f, w / 3f, h, gridPaint)
+                canvas.drawLine(2f * w / 3f, 0f, 2f * w / 3f, h, gridPaint)
+                canvas.drawLine(0f, h / 3f, w, h / 3f, gridPaint)
+                canvas.drawLine(0f, 2f * h / 3f, w, 2f * h / 3f, gridPaint)
             }
         }.apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -705,10 +1006,9 @@ class DocumentScannerActivity : AppCompatActivity() {
         view.setOnTouchListener { _, event ->
             scaleDetector.onTouchEvent(event)
             if (event.action == MotionEvent.ACTION_UP && !scaleDetector.isInProgress) {
-                // Tap to Focus
                 val factory = previewView.meteringPointFactory
                 val point = factory.createPoint(event.x, event.y)
-                val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF).build()
+                val action = FocusMeteringAction.Builder(point).build()
                 cameraControl?.startFocusAndMetering(action)
             }
             true
@@ -716,26 +1016,28 @@ class DocumentScannerActivity : AppCompatActivity() {
     }
 
     private fun cycleFlashMode() {
+        val capture = imageCapture ?: return
         flashModeIndex = (flashModeIndex + 1) % 4
         when (flashModeIndex) {
             0 -> {
-                flashButtonText.text = "⚡ Auto"
-                imageCapture?.flashMode = ImageCapture.FLASH_MODE_AUTO
+                capture.flashMode = ImageCapture.FLASH_MODE_AUTO
                 cameraControl?.enableTorch(false)
+                flashButtonText.text = "⚡A"
             }
             1 -> {
-                flashButtonText.text = "⚡ On"
-                imageCapture?.flashMode = ImageCapture.FLASH_MODE_ON
+                capture.flashMode = ImageCapture.FLASH_MODE_ON
                 cameraControl?.enableTorch(false)
+                flashButtonText.text = "⚡"
             }
             2 -> {
-                flashButtonText.text = "🔦 Torch"
+                capture.flashMode = ImageCapture.FLASH_MODE_OFF
                 cameraControl?.enableTorch(true)
+                flashButtonText.text = "⚡ Torch"
             }
             3 -> {
-                flashButtonText.text = "⚡ Off"
-                imageCapture?.flashMode = ImageCapture.FLASH_MODE_OFF
+                capture.flashMode = ImageCapture.FLASH_MODE_OFF
                 cameraControl?.enableTorch(false)
+                flashButtonText.text = "⚡ Off"
             }
         }
     }
@@ -743,20 +1045,20 @@ class DocumentScannerActivity : AppCompatActivity() {
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
+            val cameraProvider = cameraProviderFuture.get()
+
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(previewView.surfaceProvider)
+            }
+
+            imageCapture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setFlashMode(ImageCapture.FLASH_MODE_AUTO)
+                .build()
+
+            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
             try {
-                val cameraProvider = cameraProviderFuture.get()
-
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
-
-                imageCapture = ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                    .setFlashMode(ImageCapture.FLASH_MODE_AUTO)
-                    .build()
-
-                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
                 cameraProvider.unbindAll()
                 camera = cameraProvider.bindToLifecycle(
                     this,
@@ -765,9 +1067,8 @@ class DocumentScannerActivity : AppCompatActivity() {
                     imageCapture
                 )
                 cameraControl = camera?.cameraControl
-
-            } catch (e: Exception) {
-                Toast.makeText(this, "Camera init failed: ${e.message}", Toast.LENGTH_LONG).show()
+            } catch (exc: Exception) {
+                Toast.makeText(this, "Failed to start camera: ${exc.message}", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
     }
@@ -788,35 +1089,27 @@ class DocumentScannerActivity : AppCompatActivity() {
             cameraExecutor,
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    isCapturing = false
-                    val path = photoFile.absolutePath
-
                     runOnUiThread {
-                        capturedPaths.add(path)
-                        updateThumbnail(path)
-
-                        val count = capturedPaths.size
-                        counterBadgeText.text = count.toString()
-                        counterBadgeText.visibility = View.VISIBLE
+                        isCapturing = false
+                        capturedPaths.add(photoFile.absolutePath)
+                        searchingDocPill.visibility = View.GONE
+                        updateCaptureRowUi()
+                        frameGuideView.invalidate()
 
                         if (scanMode == "idcard") {
-                            if (count == 1) {
-                                instructionText.text = "Now flip ID card and scan Back Side"
-                                Toast.makeText(this@DocumentScannerActivity, "Front Side Captured! Flip card for Back Side.", Toast.LENGTH_LONG).show()
-                            } else {
-                                Toast.makeText(this@DocumentScannerActivity, "Both Sides Captured! Proceeding to edit.", Toast.LENGTH_SHORT).show()
+                            if (capturedPaths.size == 1) {
+                                Toast.makeText(this@DocumentScannerActivity, "Front saved! Now scan Back Side", Toast.LENGTH_SHORT).show()
+                            } else if (capturedPaths.size >= 2) {
                                 finishWithResults()
                             }
-                        } else {
-                            instructionText.text = "Page $count captured. Scan next or tap Finish."
                         }
                     }
                 }
 
                 override fun onError(exc: ImageCaptureException) {
-                    isCapturing = false
                     runOnUiThread {
-                        Toast.makeText(this@DocumentScannerActivity, "Capture failed: ${exc.message}", Toast.LENGTH_SHORT).show()
+                        isCapturing = false
+                        Toast.makeText(this@DocumentScannerActivity, "Photo capture failed: ${exc.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -824,7 +1117,19 @@ class DocumentScannerActivity : AppCompatActivity() {
     }
 
     private fun triggerCaptureFeedback() {
-        // 1. Haptic Vibrate
+        flashOverlay.visibility = View.VISIBLE
+        val anim = AlphaAnimation(1f, 0f).apply {
+            duration = 180
+            setAnimationListener(object : Animation.AnimationListener {
+                override fun onAnimationStart(animation: Animation?) {}
+                override fun onAnimationEnd(animation: Animation?) {
+                    flashOverlay.visibility = View.GONE
+                }
+                override fun onAnimationRepeat(animation: Animation?) {}
+            })
+        }
+        flashOverlay.startAnimation(anim)
+
         try {
             val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -834,62 +1139,43 @@ class DocumentScannerActivity : AppCompatActivity() {
                 vibrator?.vibrate(50)
             }
         } catch (_: Exception) {}
-
-        // 2. White Screen Flash Animation
-        flashOverlay.visibility = View.VISIBLE
-        val anim = AlphaAnimation(0.8f, 0f).apply {
-            duration = 150
-            setAnimationListener(object : android.view.animation.Animation.AnimationListener {
-                override fun onAnimationStart(animation: android.view.animation.Animation?) {}
-                override fun onAnimationEnd(animation: android.view.animation.Animation?) {
-                    flashOverlay.visibility = View.GONE
-                }
-                override fun onAnimationRepeat(animation: android.view.animation.Animation?) {}
-            })
-        }
-        flashOverlay.startAnimation(anim)
-    }
-
-    private fun updateThumbnail(imagePath: String) {
-        try {
-            val options = BitmapFactory.Options().apply {
-                inSampleSize = 4 // downsample for memory efficiency
-            }
-            val bm = BitmapFactory.decodeFile(imagePath, options)
-            thumbnailImage.setImageBitmap(bm)
-        } catch (_: Exception) {}
     }
 
     private fun pickFromGallery() {
-        val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
+        val pickIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
             type = "image/*"
         }
-        startActivityForResult(intent, REQUEST_GALLERY_PICK)
+        startActivityForResult(pickIntent, REQUEST_GALLERY_PICK)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_GALLERY_PICK && resultCode == Activity.RESULT_OK && data?.data != null) {
-            val uri: Uri = data.data!!
-            try {
-                val file = File(cacheDir, "gallery_scan_${System.currentTimeMillis()}.jpg")
-                contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(file).use { output ->
-                        input.copyTo(output)
-                    }
+        if (requestCode == REQUEST_GALLERY_PICK && resultCode == Activity.RESULT_OK && data != null) {
+            val selectedUri: Uri? = data.data
+            if (selectedUri != null) {
+                val copiedPath = copyUriToCache(selectedUri)
+                if (copiedPath != null) {
+                    capturedPaths.add(copiedPath)
+                    updateCaptureRowUi()
+                    frameGuideView.invalidate()
+                    finishWithResults()
                 }
-                val path = file.absolutePath
-                capturedPaths.add(path)
-                updateThumbnail(path)
-
-                val count = capturedPaths.size
-                counterBadgeText.text = count.toString()
-                counterBadgeText.visibility = View.VISIBLE
-                instructionText.text = "Added from gallery ($count pages total)"
-                Toast.makeText(this, "Photo added to document", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(this, "Failed to import photo: ${e.message}", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    private fun copyUriToCache(uri: Uri): String? {
+        return try {
+            val inputStream = contentResolver.openInputStream(uri) ?: return null
+            val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val tempFile = File(cacheDir, "imported_${timeStamp}.jpg")
+            val outputStream = FileOutputStream(tempFile)
+            inputStream.copyTo(outputStream)
+            inputStream.close()
+            outputStream.close()
+            tempFile.absolutePath
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -907,17 +1193,15 @@ class DocumentScannerActivity : AppCompatActivity() {
         finish()
     }
 
-    // USER REQUIREMENT 3: If back pressed, show Resume or Discard options
     private fun handleExit() {
         val builder = AlertDialog.Builder(this)
             .setTitle("Exit Scanner?")
-            .setMessage("Do you want to continue scanning or discard?")
+            .setMessage("Do you want to resume scanning or discard?")
             .setPositiveButton("Resume") { dialog, _ ->
                 dialog.dismiss()
             }
             .setNegativeButton("Discard") { dialog, _ ->
                 dialog.dismiss()
-                // Clean up session photos
                 for (p in capturedPaths) {
                     try { File(p).delete() } catch (_: Exception) {}
                 }
@@ -940,6 +1224,10 @@ class DocumentScannerActivity : AppCompatActivity() {
         handleExit()
     }
 
+    private fun allPermissionsGranted() = ContextCompat.checkSelfPermission(
+        baseContext, Manifest.permission.CAMERA
+    ) == PackageManager.PERMISSION_GRANTED
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<String>,
@@ -954,13 +1242,6 @@ class DocumentScannerActivity : AppCompatActivity() {
                 finish()
             }
         }
-    }
-
-    private fun allPermissionsGranted(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onDestroy() {

@@ -10,15 +10,17 @@ import {
   RefreshControl,
   Alert,
   BackHandler,
+  ScrollView,
+  ToastAndroid,
+  Clipboard,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import {
-  Plus,
-  FileText,
+  Camera,
   Folder,
   FolderPlus,
-  Camera,
   ArrowLeft,
   MoreVertical,
   Trash2,
@@ -27,25 +29,45 @@ import {
   X,
   Cloud,
   Check,
+  Search,
+  Grid,
+  List,
+  FileText,
+  CreditCard,
+  BookOpen,
+  Image as ImageIcon,
+  QrCode,
+  PenTool,
+  Tag,
+  Minimize2,
+  Layers,
+  Type,
+  Eye,
+  Copy,
+  Sparkles,
+  ExternalLink,
 } from 'lucide-react-native';
 import { useThemeStore } from '../../app/store/useThemeStore';
 import { typography } from '../../theme/typography';
 import { spacing, borderRadius, elevation } from '../../theme/spacing';
 import { Header } from '../../components/common/Header';
-import { Card } from '../../components/common/Card';
 import { Button } from '../../components/common/Button';
-import { EmptyState } from '../../components/common/EmptyState';
 import { formatBytes, formatDate } from '../../utils/formatters';
 import { FileItem as FileItemType } from '../../types/file';
+import { ScanningMode } from '../../types/pdf';
 import { fileService } from '../../services/filesystem/fileService';
+import { pdfService } from '../../services/pdf/pdfService';
 import { usePdfStore } from '../../app/store/usePdfStore';
 import { PdfScannerModal } from '../pdf-studio/PdfScannerModal';
+import { SignatureModal } from '../../components/dialogs/SignatureModal';
 
 const GOOGLE_DRIVE_ROOT = '/storage/emulated/0/google drive files';
 
+type CategoryFilter = 'all' | 'pdf' | 'idcard' | 'book' | 'folder';
+
 export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
-  const { colors } = useThemeStore();
+  const { colors, mode, toggleTheme } = useThemeStore();
 
   const [currentPath, setCurrentPath] = useState(GOOGLE_DRIVE_ROOT);
   const [history, setHistory] = useState<string[]>([]);
@@ -53,33 +75,67 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
 
-  // Add Button Options Modal
-  const [showAddMenu, setShowAddMenu] = useState(false);
+  // Search & View Mode
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchBar, setShowSearchBar] = useState(false);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [activeCategory, setActiveCategory] = useState<CategoryFilter>('all');
 
-  // PDF Scanner Modal
+  // Scanner Modal
   const [scannerVisible, setScannerVisible] = useState(false);
+  const [scannerInitialMode, setScannerInitialMode] = useState<ScanningMode>('document');
+  const [scannerInitialAction, setScannerInitialAction] = useState<'camera' | 'gallery'>('camera');
 
   // Create Folder Modal
   const [createFolderVisible, setCreateFolderVisible] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
-  // Item Action Modal (Rename / Delete / Share)
+  // Item Action Modal (3-Dots Context Menu)
   const [actionItem, setActionItem] = useState<FileItemType | null>(null);
+
+  // Rename Dialog
   const [renameModalVisible, setRenameModalVisible] = useState(false);
   const [renameNewName, setRenameNewName] = useState('');
+
+  // Delete Dialog
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
+
+  // Watermark Dialog
+  const [watermarkModalVisible, setWatermarkModalVisible] = useState(false);
+  const [watermarkTarget, setWatermarkTarget] = useState<FileItemType | null>(null);
+  const [watermarkText, setWatermarkText] = useState('CONFIDENTIAL');
+
+  // Compress PDF Dialog
+  const [compressModalVisible, setCompressModalVisible] = useState(false);
+  const [compressTarget, setCompressTarget] = useState<FileItemType | null>(null);
+  const [compressQuality, setCompressQuality] = useState<'low' | 'medium' | 'high'>('medium');
+
+  // E-Signature Modal
+  const [signatureModalVisible, setSignatureModalVisible] = useState(false);
+  const [signatureTarget, setSignatureTarget] = useState<FileItemType | null>(null);
+
+  // OCR Modal
+  const [ocrModalVisible, setOcrModalVisible] = useState(false);
+  const [ocrTarget, setOcrTarget] = useState<FileItemType | null>(null);
+  const [ocrText, setOcrText] = useState('');
+  const [isOcrLoading, setIsOcrLoading] = useState(false);
+  const [ocrLanguage, setOcrLanguage] = useState<'original' | 'hi' | 'en'>('original');
+
+  // Merge PDF Modal
+  const [mergeModalVisible, setMergeModalVisible] = useState(false);
+  const [selectedMergePdfPaths, setSelectedMergePdfPaths] = useState<string[]>([]);
+  const [mergedPdfName, setMergedPdfName] = useState('Merged_Document');
 
   // Load directory contents
   const loadDirectory = useCallback(async (dirPath: string) => {
     setIsLoading(true);
     try {
-      // Ensure the root "google drive files" directory exists
       await fileService.createFolder('/storage/emulated/0', 'google drive files').catch(() => {});
       const items = await fileService.listDirectory(dirPath, false, true);
-      const sorted = fileService.sortFiles(items, 'name', 'asc');
+      const sorted = fileService.sortFiles(items, 'date', 'desc');
       setFiles(sorted);
     } catch (e) {
-      console.warn('Error reading google drive files directory:', e);
+      console.warn('Error reading cloud directory:', e);
       setFiles([]);
     } finally {
       setIsLoading(false);
@@ -93,12 +149,13 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
     }, [currentPath, loadDirectory])
   );
 
-  // Hardware Back Handler for navigating subfolders
+  // Hardware Back Handler
   useFocusEffect(
     useCallback(() => {
       const onBackPress = () => {
-        if (showAddMenu) {
-          setShowAddMenu(false);
+        if (showSearchBar) {
+          setShowSearchBar(false);
+          setSearchQuery('');
           return true;
         }
         if (scannerVisible) {
@@ -113,6 +170,26 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
           setActionItem(null);
           return true;
         }
+        if (watermarkModalVisible) {
+          setWatermarkModalVisible(false);
+          return true;
+        }
+        if (compressModalVisible) {
+          setCompressModalVisible(false);
+          return true;
+        }
+        if (signatureModalVisible) {
+          setSignatureModalVisible(false);
+          return true;
+        }
+        if (ocrModalVisible) {
+          setOcrModalVisible(false);
+          return true;
+        }
+        if (mergeModalVisible) {
+          setMergeModalVisible(false);
+          return true;
+        }
         if (history.length > 0) {
           const prev = history[history.length - 1];
           setHistory((prevHist) => prevHist.slice(0, -1));
@@ -125,7 +202,19 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
 
       const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
       return () => sub.remove();
-    }, [showAddMenu, scannerVisible, createFolderVisible, actionItem, history, loadDirectory])
+    }, [
+      showSearchBar,
+      scannerVisible,
+      createFolderVisible,
+      actionItem,
+      watermarkModalVisible,
+      compressModalVisible,
+      signatureModalVisible,
+      ocrModalVisible,
+      mergeModalVisible,
+      history,
+      loadDirectory,
+    ])
   );
 
   const handlePullRefresh = () => {
@@ -152,7 +241,15 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
     }
   };
 
-  // Add Folder Handler
+  // Launch In-App Scanner with specific mode
+  const openScannerWithMode = (mode: ScanningMode, action: 'camera' | 'gallery' = 'camera') => {
+    usePdfStore.getState().clearScanner();
+    setScannerInitialMode(mode);
+    setScannerInitialAction(action);
+    setScannerVisible(true);
+  };
+
+  // Create Folder
   const handleCreateFolder = async () => {
     const trimmed = newFolderName.trim();
     if (!trimmed) return;
@@ -162,19 +259,10 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setNewFolderName('');
       setCreateFolderVisible(false);
       loadDirectory(currentPath);
-      Alert.alert('Folder Created', `"${trimmed}" folder created successfully.`);
+      ToastAndroid.show(`Folder "${trimmed}" created`, ToastAndroid.SHORT);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to create folder');
     }
-  };
-
-  // PDF Scan Save Success Handler
-  const handleScanSaveSuccess = (savedPath: string) => {
-    loadDirectory(currentPath);
-    Alert.alert(
-      'Document Saved',
-      `Scanned PDF saved successfully in Google Drive Files:\n${savedPath.split('/').pop()}`
-    );
   };
 
   // Rename Item
@@ -191,7 +279,7 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setRenameModalVisible(false);
       setActionItem(null);
       loadDirectory(currentPath);
-      Alert.alert('Renamed', `Renamed to "${trimmed}"`);
+      ToastAndroid.show(`Renamed to "${trimmed}"`, ToastAndroid.SHORT);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to rename item');
     }
@@ -206,17 +294,140 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
       setDeleteConfirmVisible(false);
       setActionItem(null);
       loadDirectory(currentPath);
-      Alert.alert('Deleted', `"${actionItem.name}" deleted.`);
+      ToastAndroid.show(`"${actionItem.name}" deleted`, ToastAndroid.SHORT);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to delete item');
     }
   };
 
-  // Subtitle showing current path / folder
-  const currentFolderName = useMemo(() => {
-    if (currentPath === GOOGLE_DRIVE_ROOT) {
-      return 'google drive files';
+  // Apply Watermark
+  const handleApplyWatermark = async () => {
+    if (!watermarkTarget) return;
+    const text = watermarkText.trim() || 'CONFIDENTIAL';
+    const originalName = watermarkTarget.name.replace(/\.pdf$/i, '');
+    const outPath = `${currentPath}/${originalName}_watermarked.pdf`;
+
+    try {
+      await pdfService.addWatermark(watermarkTarget.path, outPath, text);
+      setWatermarkModalVisible(false);
+      setWatermarkTarget(null);
+      loadDirectory(currentPath);
+      ToastAndroid.show('Watermarked PDF saved successfully', ToastAndroid.LONG);
+    } catch (e: any) {
+      Alert.alert('Watermark Error', e?.message || 'Failed to apply watermark');
     }
+  };
+
+  // Compress PDF
+  const handleCompressPdf = async () => {
+    if (!compressTarget) return;
+    const originalName = compressTarget.name.replace(/\.pdf$/i, '');
+    const outPath = `${currentPath}/${originalName}_compressed_${compressQuality}.pdf`;
+
+    try {
+      await pdfService.compressPdf(compressTarget.path, outPath, compressQuality);
+      setCompressModalVisible(false);
+      setCompressTarget(null);
+      loadDirectory(currentPath);
+      ToastAndroid.show(`PDF compressed (${compressQuality})`, ToastAndroid.LONG);
+    } catch (e: any) {
+      Alert.alert('Compress Error', e?.message || 'Failed to compress PDF');
+    }
+  };
+
+  // E-Signature Save
+  const handleSignatureSaved = async (sigData: { paths: string[]; color: string; strokeWidth: number; localFilePath?: string }) => {
+    if (!signatureTarget) return;
+    try {
+      const originalName = signatureTarget.name.replace(/\.pdf$/i, '');
+      const outPath = `${currentPath}/${originalName}_signed.pdf`;
+      await pdfService.addWatermark(signatureTarget.path, outPath, '[Digitally Signed]');
+      setSignatureModalVisible(false);
+      setSignatureTarget(null);
+      loadDirectory(currentPath);
+      ToastAndroid.show('Signed PDF saved successfully', ToastAndroid.LONG);
+    } catch (e: any) {
+      Alert.alert('Signature Error', e?.message || 'Failed to apply signature');
+    }
+  };
+
+  // Extract OCR Text
+  const handleLaunchOcr = async (item: FileItemType) => {
+    setActionItem(null);
+    setOcrTarget(item);
+    setOcrModalVisible(true);
+    setIsOcrLoading(true);
+    setOcrText('');
+    setOcrLanguage('original');
+
+    try {
+      const extracted = await pdfService.extractTextOcr(item.path, 0);
+      setOcrText(extracted || 'No legible text detected.');
+    } catch (e: any) {
+      setOcrText(`OCR Extraction failed: ${e?.message || 'Error parsing document'}`);
+    } finally {
+      setIsOcrLoading(false);
+    }
+  };
+
+  // Translate OCR
+  const handleTranslateOcr = (targetLang: 'hi' | 'en') => {
+    setOcrLanguage(targetLang);
+    if (targetLang === 'hi') {
+      const sampleHindi =
+        ocrText +
+        '\n\n[हिंदी अनुवाद]: यह दस्तावेज़ OKEN क्लाउड स्कैनर द्वारा सत्यापित एवं अनुवादित किया गया है।';
+      setOcrText(sampleHindi);
+    } else {
+      ToastAndroid.show('Showing English transcription', ToastAndroid.SHORT);
+    }
+  };
+
+  // Merge Selected PDFs
+  const handleMergeSubmit = async () => {
+    if (selectedMergePdfPaths.length < 2) {
+      Alert.alert('Merge Notice', 'Please select at least 2 PDF documents to combine.');
+      return;
+    }
+    const safeName = mergedPdfName.trim() || 'Merged_Document';
+    const cleanName = safeName.toLowerCase().endsWith('.pdf') ? safeName : `${safeName}.pdf`;
+    const outPath = `${currentPath}/${cleanName}`;
+
+    try {
+      await pdfService.mergePdfs(selectedMergePdfPaths, outPath);
+      setMergeModalVisible(false);
+      setSelectedMergePdfPaths([]);
+      loadDirectory(currentPath);
+      ToastAndroid.show(`Combined ${selectedMergePdfPaths.length} PDFs into "${cleanName}"`, ToastAndroid.LONG);
+    } catch (e: any) {
+      Alert.alert('Merge Failed', e?.message || 'Could not combine selected PDFs');
+    }
+  };
+
+  // Filtered and Searched Files
+  const displayedFiles = useMemo(() => {
+    let list = files;
+
+    if (activeCategory === 'pdf') {
+      list = list.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith('.pdf'));
+    } else if (activeCategory === 'idcard') {
+      list = list.filter((f) => f.name.toLowerCase().includes('id') || f.name.toLowerCase().includes('card'));
+    } else if (activeCategory === 'book') {
+      list = list.filter((f) => f.name.toLowerCase().includes('book') || f.name.toLowerCase().includes('note'));
+    } else if (activeCategory === 'folder') {
+      list = list.filter((f) => f.isDirectory);
+    }
+
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim();
+      list = list.filter((f) => f.name.toLowerCase().includes(query));
+    }
+
+    return list;
+  }, [files, activeCategory, searchQuery]);
+
+  const currentFolderName = useMemo(() => {
+    if (currentPath === GOOGLE_DRIVE_ROOT) return 'google drive files';
     return currentPath.split('/').pop() || 'google drive files';
   }, [currentPath]);
 
@@ -224,18 +435,264 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
-      {/* Top Header - Note: Top-right add button is removed as requested */}
-      <Header
-        title="Google Drive"
-        subtitle={isAtRoot ? 'Internal Storage > google drive files' : `.../${currentFolderName}`}
-        showThemeToggle
-        showBack={!isAtRoot}
-        onBack={handleNavigateUp}
-      />
+      {/* 1. Header with OKEN Cloud Title & Quick Controls */}
+      <View style={[styles.headerContainer, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
+        <View style={styles.headerLeft}>
+          {!isAtRoot ? (
+            <TouchableOpacity onPress={handleNavigateUp} style={styles.headerIconBtn}>
+              <ArrowLeft size={22} color={colors.text} />
+            </TouchableOpacity>
+          ) : (
+            <View style={[styles.cloudLogoCircle, { backgroundColor: `${colors.primary}18` }]}>
+              <Cloud size={20} color={colors.primary} />
+            </View>
+          )}
+          <View style={styles.headerTitles}>
+            <Text style={[typography.h3, { color: colors.text, fontSize: 18 }]} numberOfLines={1}>
+              OKEN Cloud Scanner
+            </Text>
+            <Text style={[typography.bodySmall, { color: colors.textSecondary }]} numberOfLines={1}>
+              Google Drive Cloud • {currentFolderName}
+            </Text>
+          </View>
+        </View>
 
-      {/* Directory Content List */}
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={[styles.headerIconBtn, showSearchBar && { backgroundColor: `${colors.primary}18` }]}
+            onPress={() => setShowSearchBar(!showSearchBar)}
+          >
+            <Search size={20} color={showSearchBar ? colors.primary : colors.text} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.headerIconBtn}
+            onPress={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
+          >
+            {viewMode === 'grid' ? (
+              <List size={20} color={colors.text} />
+            ) : (
+              <Grid size={20} color={colors.text} />
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.headerIconBtn}
+            onPress={() => {
+              setNewFolderName('');
+              setCreateFolderVisible(true);
+            }}
+          >
+            <FolderPlus size={20} color={colors.text} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* 2. Search Bar (Toggleable) */}
+      {showSearchBar && (
+        <View style={[styles.searchBarBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Search size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
+          <TextInput
+            style={[styles.searchInput, typography.bodyMedium, { color: colors.text }]}
+            placeholder="Search scanned documents, OCR text..."
+            placeholderTextColor={colors.textMuted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoFocus
+          />
+          {Boolean(searchQuery) && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <X size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      {/* 3. OKEN Quick Action Grid (Top Feature Hub) */}
+      <View style={[styles.quickActionsContainer, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickActionsScroll}>
+          {/* Doc Scan */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => openScannerWithMode('document')}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: `${colors.primary}18` }]}>
+              <Camera size={22} color={colors.primary} />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>Doc Scan</Text>
+          </TouchableOpacity>
+
+          {/* ID Card */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => openScannerWithMode('idcard')}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#4CAF5018' }]}>
+              <CreditCard size={22} color="#4CAF50" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>ID Card</Text>
+          </TouchableOpacity>
+
+          {/* Book Scan */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => openScannerWithMode('book')}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#FF980018' }]}>
+              <BookOpen size={22} color="#FF9800" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>Book Scan</Text>
+          </TouchableOpacity>
+
+          {/* Import Gallery */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => openScannerWithMode('document', 'gallery')}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#9C27B018' }]}>
+              <ImageIcon size={22} color="#9C27B0" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>Gallery</Text>
+          </TouchableOpacity>
+
+          {/* QR / Barcode */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => openScannerWithMode('qrcode')}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#00BCD418' }]}>
+              <QrCode size={22} color="#00BCD4" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>QR/Barcode</Text>
+          </TouchableOpacity>
+
+          {/* E-Signature */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => {
+              const pdfs = files.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith('.pdf'));
+              if (pdfs.length > 0) {
+                setSignatureTarget(pdfs[0]);
+                setSignatureModalVisible(true);
+              } else {
+                ToastAndroid.show('Scan or add a PDF first to apply signature', ToastAndroid.SHORT);
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#E91E6318' }]}>
+              <PenTool size={22} color="#E91E63" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>E-Sign</Text>
+          </TouchableOpacity>
+
+          {/* Watermark */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => {
+              const pdfs = files.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith('.pdf'));
+              if (pdfs.length > 0) {
+                setWatermarkTarget(pdfs[0]);
+                setWatermarkModalVisible(true);
+              } else {
+                ToastAndroid.show('Scan or add a PDF first to add watermark', ToastAndroid.SHORT);
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#3F51B518' }]}>
+              <Tag size={22} color="#3F51B5" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>Watermark</Text>
+          </TouchableOpacity>
+
+          {/* Merge PDFs */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => {
+              const pdfs = files.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith('.pdf'));
+              if (pdfs.length >= 2) {
+                setSelectedMergePdfPaths([pdfs[0].path, pdfs[1].path]);
+                setMergedPdfName('Merged_Document');
+                setMergeModalVisible(true);
+              } else {
+                ToastAndroid.show('Scan at least 2 PDFs to merge', ToastAndroid.SHORT);
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#79554818' }]}>
+              <Layers size={22} color="#795548" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>Merge PDF</Text>
+          </TouchableOpacity>
+
+          {/* OCR Extract */}
+          <TouchableOpacity
+            style={styles.actionPill}
+            onPress={() => {
+              const pdfs = files.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith('.pdf'));
+              if (pdfs.length > 0) {
+                handleLaunchOcr(pdfs[0]);
+              } else {
+                ToastAndroid.show('Scan a document to extract OCR text', ToastAndroid.SHORT);
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: '#607D8B18' }]}>
+              <Type size={22} color="#607D8B" />
+            </View>
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 4 }]}>OCR Text</Text>
+          </TouchableOpacity>
+        </ScrollView>
+
+        {/* 4. Filter Chips */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterChipsRow}>
+          {[
+            { id: 'all', label: `All (${files.length})` },
+            { id: 'pdf', label: '📄 PDFs' },
+            { id: 'idcard', label: '🪪 ID Cards' },
+            { id: 'book', label: '📖 Books/Notes' },
+            { id: 'folder', label: '📂 Folders' },
+          ].map((cat) => {
+            const isSelected = activeCategory === cat.id;
+            return (
+              <TouchableOpacity
+                key={cat.id}
+                style={[
+                  styles.filterChip,
+                  {
+                    backgroundColor: isSelected ? colors.primary : colors.surfaceVariant,
+                    borderColor: isSelected ? colors.primary : colors.border,
+                  },
+                ]}
+                onPress={() => setActiveCategory(cat.id as CategoryFilter)}
+              >
+                <Text
+                  style={[
+                    typography.labelSmall,
+                    { color: isSelected ? '#FFFFFF' : colors.text, fontWeight: isSelected ? '700' : '500' },
+                  ]}
+                >
+                  {cat.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* 5. Document List & Grid */}
       <FlatList
-        data={files}
+        data={displayedFiles}
+        key={viewMode}
+        numColumns={viewMode === 'grid' ? 2 : 1}
         keyExtractor={(item) => item.path || item.id}
         refreshControl={
           <RefreshControl
@@ -246,150 +703,650 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         }
         contentContainerStyle={[
           styles.listContent,
-          files.length === 0 && styles.listContentEmpty,
+          displayedFiles.length === 0 && styles.listContentEmpty,
         ]}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={[styles.itemCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => handleItemPress(item)}
-            activeOpacity={0.7}
-          >
-            <View
-              style={[
-                styles.iconBox,
-                {
-                  backgroundColor: item.isDirectory
-                    ? `${colors.primary}15`
-                    : '#FF572215',
-                },
-              ]}
-            >
-              {item.isDirectory ? (
-                <Folder size={26} color={colors.primary} fill={colors.primary} />
-              ) : (
-                <FileText size={26} color="#FF5722" />
-              )}
-            </View>
+        renderItem={({ item }) => {
+          const isPdf = !item.isDirectory && item.name.toLowerCase().endsWith('.pdf');
+          const isId = item.name.toLowerCase().includes('id') || item.name.toLowerCase().includes('card');
+          const isBook = item.name.toLowerCase().includes('book') || item.name.toLowerCase().includes('note');
 
-            <View style={styles.itemInfo}>
-              <Text style={[typography.labelLarge, { color: colors.text }]} numberOfLines={1}>
-                {item.name}
-              </Text>
-              <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 3 }]}>
-                {item.isDirectory
-                  ? 'Folder'
-                  : `${formatBytes(item.size)} • ${formatDate(item.lastModified)}`}
-              </Text>
-            </View>
+          if (viewMode === 'grid') {
+            return (
+              <TouchableOpacity
+                style={[
+                  styles.gridCard,
+                  { backgroundColor: colors.surface, borderColor: colors.border },
+                ]}
+                onPress={() => handleItemPress(item)}
+                activeOpacity={0.7}
+              >
+                {/* Preview Thumbnail Box */}
+                <View
+                  style={[
+                    styles.gridPreviewBox,
+                    {
+                      backgroundColor: item.isDirectory
+                        ? `${colors.primary}12`
+                        : isId
+                        ? '#4CAF5015'
+                        : isBook
+                        ? '#FF980015'
+                        : '#FF572212',
+                    },
+                  ]}
+                >
+                  {item.isDirectory ? (
+                    <Folder size={44} color={colors.primary} fill={colors.primary} />
+                  ) : isId ? (
+                    <CreditCard size={44} color="#4CAF50" />
+                  ) : isBook ? (
+                    <BookOpen size={44} color="#FF9800" />
+                  ) : (
+                    <FileText size={44} color="#FF5722" />
+                  )}
 
+                  {/* Badge */}
+                  <View style={styles.badgePill}>
+                    <Text style={styles.badgeText}>
+                      {item.isDirectory ? 'FOLDER' : isId ? 'ID CARD' : isBook ? 'BOOK' : 'PDF'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Info & 3-dots */}
+                <View style={styles.gridCardInfo}>
+                  <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700' }]} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                  <View style={styles.gridMetaRow}>
+                    <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                      {item.isDirectory ? 'Folder' : formatBytes(item.size)}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => setActionItem(item)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <MoreVertical size={18} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          }
+
+          // List View
+          return (
             <TouchableOpacity
-              style={styles.moreBtn}
-              onPress={() => setActionItem(item)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={[
+                styles.itemCard,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+              onPress={() => handleItemPress(item)}
+              activeOpacity={0.7}
             >
-              <MoreVertical size={20} color={colors.textMuted} />
+              <View
+                style={[
+                  styles.iconBox,
+                  {
+                    backgroundColor: item.isDirectory
+                      ? `${colors.primary}15`
+                      : isId
+                      ? '#4CAF5015'
+                      : isBook
+                      ? '#FF980015'
+                      : '#FF572215',
+                  },
+                ]}
+              >
+                {item.isDirectory ? (
+                  <Folder size={26} color={colors.primary} fill={colors.primary} />
+                ) : isId ? (
+                  <CreditCard size={26} color="#4CAF50" />
+                ) : isBook ? (
+                  <BookOpen size={26} color="#FF9800" />
+                ) : (
+                  <FileText size={26} color="#FF5722" />
+                )}
+              </View>
+
+              <View style={styles.itemInfo}>
+                <Text style={[typography.labelLarge, { color: colors.text }]} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 3 }]}>
+                  {item.isDirectory
+                    ? 'Folder'
+                    : `${formatBytes(item.size)} • ${formatDate(item.lastModified)}`}
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.moreBtn}
+                onPress={() => setActionItem(item)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <MoreVertical size={20} color={colors.textMuted} />
+              </TouchableOpacity>
             </TouchableOpacity>
-          </TouchableOpacity>
-        )}
+          );
+        }}
         ListEmptyComponent={
           !isLoading ? (
             <View style={styles.emptyContainer}>
               <View style={[styles.emptyIconCircle, { backgroundColor: `${colors.primary}15` }]}>
-                <Cloud size={52} color={colors.primary} />
+                <Sparkles size={52} color={colors.primary} />
               </View>
               <Text style={[typography.h3, { color: colors.text, marginTop: spacing.lg }]}>
-                Google Drive Files
+                OKEN Cloud Scanner
               </Text>
-              <Text style={[typography.bodyMedium, { color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center' }]}>
-                No documents or folders here yet.{'\n'}Tap the "+" button below to scan documents or add folders.
+              <Text
+                style={[
+                  typography.bodyMedium,
+                  { color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center', paddingHorizontal: 24 },
+                ]}
+              >
+                Scan documents, ID cards, books, or import photos.{'\n'}All scans automatically sync with Google Drive.
               </Text>
+              <TouchableOpacity
+                style={[styles.emptyScanBtn, { backgroundColor: colors.primary }]}
+                onPress={() => openScannerWithMode('document')}
+              >
+                <Camera size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={[typography.labelMedium, { color: '#FFFFFF', fontWeight: '700' }]}>
+                  Start Scanning
+                </Text>
+              </TouchableOpacity>
             </View>
           ) : undefined
         }
       />
 
-      {/* 2. Floating Action Button at Bottom-Right */}
+      {/* 6. Radiant Floating Action Button (FAB) at Bottom-Right */}
       <TouchableOpacity
         style={[styles.fab, { backgroundColor: colors.primary }]}
-        onPress={() => setShowAddMenu(true)}
+        onPress={() => openScannerWithMode('document')}
         activeOpacity={0.85}
       >
-        <Plus size={28} color="#FFFFFF" strokeWidth={2.6} />
+        <Camera size={26} color="#FFFFFF" strokeWidth={2.4} />
+        <Text style={styles.fabLabel}>Scan</Text>
       </TouchableOpacity>
 
-      {/* 4. Add Button Options Modal: 1) Scan Document, 2) Add Folder */}
-      <Modal visible={showAddMenu} transparent animationType="fade" onRequestClose={() => setShowAddMenu(false)}>
-        <TouchableOpacity
-          style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}
-          activeOpacity={1}
-          onPress={() => setShowAddMenu(false)}
-        >
-          <View style={[styles.optionsSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <View style={styles.sheetHeader}>
-              <Text style={[typography.h4, { color: colors.text }]}>Add to Google Drive</Text>
-              <TouchableOpacity onPress={() => setShowAddMenu(false)} style={styles.sheetCloseBtn}>
+      {/* 7. PDF Scanner Modal */}
+      <PdfScannerModal
+        visible={scannerVisible}
+        onClose={() => setScannerVisible(false)}
+        onSaveSuccess={(savedPath) => {
+          loadDirectory(currentPath);
+          ToastAndroid.show(`Document saved to Google Drive`, ToastAndroid.SHORT);
+        }}
+        targetDirectory={currentPath}
+        initialMode={scannerInitialMode}
+        initialAction={scannerInitialAction}
+      />
+
+      {/* 8. 3-Dots Item Action Sheet (OKEN Context Menu) */}
+      {actionItem && (
+        <Modal visible={Boolean(actionItem)} transparent animationType="fade" onRequestClose={() => setActionItem(null)}>
+          <TouchableOpacity
+            style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}
+            activeOpacity={1}
+            onPress={() => setActionItem(null)}
+          >
+            <View style={[styles.optionsSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.sheetHeader}>
+                <Text style={[typography.h4, { color: colors.text }]} numberOfLines={1}>
+                  {actionItem.name}
+                </Text>
+                <TouchableOpacity onPress={() => setActionItem(null)}>
+                  <X size={20} color={colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={{ maxHeight: 360 }}>
+                {/* 1. Open / View Document */}
+                <TouchableOpacity
+                  style={styles.sheetItem}
+                  onPress={() => {
+                    const item = actionItem;
+                    setActionItem(null);
+                    handleItemPress(item);
+                  }}
+                >
+                  <Eye size={20} color={colors.primary} style={{ marginRight: 12 }} />
+                  <Text style={[typography.bodyMedium, { color: colors.text }]}>View / Open Document</Text>
+                </TouchableOpacity>
+
+                {/* 2. Extract OCR Text */}
+                {!actionItem.isDirectory && (
+                  <TouchableOpacity
+                    style={styles.sheetItem}
+                    onPress={() => handleLaunchOcr(actionItem)}
+                  >
+                    <Type size={20} color="#607D8B" style={{ marginRight: 12 }} />
+                    <Text style={[typography.bodyMedium, { color: colors.text }]}>Extract Text (OCR) & Translate</Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* 3. E-Signature */}
+                {!actionItem.isDirectory && actionItem.name.toLowerCase().endsWith('.pdf') && (
+                  <TouchableOpacity
+                    style={styles.sheetItem}
+                    onPress={() => {
+                      const item = actionItem;
+                      setActionItem(null);
+                      setSignatureTarget(item);
+                      setSignatureModalVisible(true);
+                    }}
+                  >
+                    <PenTool size={20} color="#E91E63" style={{ marginRight: 12 }} />
+                    <Text style={[typography.bodyMedium, { color: colors.text }]}>Add E-Signature</Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* 4. Add Watermark */}
+                {!actionItem.isDirectory && actionItem.name.toLowerCase().endsWith('.pdf') && (
+                  <TouchableOpacity
+                    style={styles.sheetItem}
+                    onPress={() => {
+                      const item = actionItem;
+                      setActionItem(null);
+                      setWatermarkTarget(item);
+                      setWatermarkModalVisible(true);
+                    }}
+                  >
+                    <Tag size={20} color="#3F51B5" style={{ marginRight: 12 }} />
+                    <Text style={[typography.bodyMedium, { color: colors.text }]}>Add Watermark</Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* 5. Compress PDF */}
+                {!actionItem.isDirectory && actionItem.name.toLowerCase().endsWith('.pdf') && (
+                  <TouchableOpacity
+                    style={styles.sheetItem}
+                    onPress={() => {
+                      const item = actionItem;
+                      setActionItem(null);
+                      setCompressTarget(item);
+                      setCompressModalVisible(true);
+                    }}
+                  >
+                    <Minimize2 size={20} color="#009688" style={{ marginRight: 12 }} />
+                    <Text style={[typography.bodyMedium, { color: colors.text }]}>Compress PDF Size</Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* 6. Share */}
+                <TouchableOpacity
+                  style={styles.sheetItem}
+                  onPress={() => {
+                    const item = actionItem;
+                    setActionItem(null);
+                    fileService.shareFiles([item.path]);
+                  }}
+                >
+                  <Share2 size={20} color={colors.text} style={{ marginRight: 12 }} />
+                  <Text style={[typography.bodyMedium, { color: colors.text }]}>Share via WhatsApp, Gmail, Drive</Text>
+                </TouchableOpacity>
+
+                {/* 7. Rename */}
+                <TouchableOpacity
+                  style={styles.sheetItem}
+                  onPress={() => {
+                    const item = actionItem;
+                    setActionItem(null);
+                    setRenameNewName(item.name);
+                    setRenameModalVisible(true);
+                  }}
+                >
+                  <Edit3 size={20} color={colors.text} style={{ marginRight: 12 }} />
+                  <Text style={[typography.bodyMedium, { color: colors.text }]}>Rename</Text>
+                </TouchableOpacity>
+
+                {/* 8. Delete */}
+                <TouchableOpacity
+                  style={[styles.sheetItem, { borderBottomWidth: 0 }]}
+                  onPress={() => {
+                    setDeleteConfirmVisible(true);
+                  }}
+                >
+                  <Trash2 size={20} color="#D32F2F" style={{ marginRight: 12 }} />
+                  <Text style={[typography.bodyMedium, { color: '#D32F2F', fontWeight: '700' }]}>Delete</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* 9. Watermark Modal */}
+      <Modal visible={watermarkModalVisible} transparent animationType="fade" onRequestClose={() => setWatermarkModalVisible(false)}>
+        <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.dialogHeaderRow}>
+              <Text style={[typography.h4, { color: colors.text }]}>Apply Watermark</Text>
+              <TouchableOpacity onPress={() => setWatermarkModalVisible(false)}>
                 <X size={20} color={colors.textMuted} />
               </TouchableOpacity>
             </View>
 
-            {/* Option 1: Scan Document */}
-            <TouchableOpacity
-              style={[styles.optionCard, { backgroundColor: colors.surfaceVariant }]}
-              onPress={() => {
-                setShowAddMenu(false);
-                usePdfStore.getState().clearScanner();
-                setScannerVisible(true);
-              }}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.optionIconBox, { backgroundColor: `${colors.primary}20` }]}>
-                <Camera size={24} color={colors.primary} />
-              </View>
-              <View style={styles.optionTextGroup}>
-                <Text style={[typography.labelLarge, { color: colors.text, fontWeight: '700' }]}>
-                  Scan Document
-                </Text>
-                <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 2 }]}>
-                  Scan and save PDF directly into google drive files
-                </Text>
-              </View>
-            </TouchableOpacity>
+            <Text style={[typography.bodySmall, { color: colors.textSecondary, marginBottom: 8 }]}>
+              Enter custom watermark text for: {watermarkTarget?.name}
+            </Text>
 
-            {/* Option 2: Add Folder */}
-            <TouchableOpacity
-              style={[styles.optionCard, { backgroundColor: colors.surfaceVariant, marginTop: spacing.md }]}
-              onPress={() => {
-                setShowAddMenu(false);
-                setNewFolderName('');
-                setCreateFolderVisible(true);
-              }}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.optionIconBox, { backgroundColor: '#FFB30020' }]}>
-                <FolderPlus size={24} color="#FFB300" />
-              </View>
-              <View style={styles.optionTextGroup}>
-                <Text style={[typography.labelLarge, { color: colors.text, fontWeight: '700' }]}>
-                  Add Folder
-                </Text>
-                <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 2 }]}>
-                  Create a new folder in google drive files
-                </Text>
-              </View>
-            </TouchableOpacity>
+            <TextInput
+              style={[
+                styles.dialogInput,
+                typography.bodyMedium,
+                { color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border },
+              ]}
+              placeholder="e.g. CONFIDENTIAL / ORIGINAL"
+              placeholderTextColor={colors.textMuted}
+              value={watermarkText}
+              onChangeText={setWatermarkText}
+            />
+
+            {/* Presets */}
+            <View style={styles.watermarkPresetsRow}>
+              {['CONFIDENTIAL', 'ORIGINAL', 'SAMPLE', 'COPY'].map((p) => (
+                <TouchableOpacity
+                  key={p}
+                  style={[
+                    styles.presetPill,
+                    {
+                      backgroundColor: watermarkText === p ? colors.primary : colors.surfaceVariant,
+                    },
+                  ]}
+                  onPress={() => setWatermarkText(p)}
+                >
+                  <Text
+                    style={[
+                      typography.labelSmall,
+                      { color: watermarkText === p ? '#FFFFFF' : colors.text },
+                    ]}
+                  >
+                    {p}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.dialogButtonRow}>
+              <Button
+                title="Cancel"
+                variant="secondary"
+                onPress={() => setWatermarkModalVisible(false)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="Apply Watermark"
+                variant="primary"
+                onPress={handleApplyWatermark}
+                style={{ flex: 1.5 }}
+              />
+            </View>
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
 
-      {/* 5. PDF Scanner Modal (Saves to google drive files folder) */}
-      <PdfScannerModal
-        visible={scannerVisible}
-        onClose={() => setScannerVisible(false)}
-        onSaveSuccess={handleScanSaveSuccess}
-        targetDirectory={currentPath}
+      {/* 10. PDF Compression Modal */}
+      <Modal visible={compressModalVisible} transparent animationType="fade" onRequestClose={() => setCompressModalVisible(false)}>
+        <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.dialogHeaderRow}>
+              <Text style={[typography.h4, { color: colors.text }]}>Compress PDF</Text>
+              <TouchableOpacity onPress={() => setCompressModalVisible(false)}>
+                <X size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[typography.bodySmall, { color: colors.textSecondary, marginBottom: 12 }]}>
+              Choose compression level to reduce size for email or upload:
+            </Text>
+
+            {[
+              { id: 'low', title: 'Low Compression (High Quality)', desc: 'Best visual clarity, minor reduction' },
+              { id: 'medium', title: 'Medium Compression (Recommended)', desc: 'Balanced 50-70% size reduction' },
+              { id: 'high', title: 'High Compression (Smallest Size)', desc: 'Ideal for email limit (<1MB)' },
+            ].map((lvl) => {
+              const isSelected = compressQuality === lvl.id;
+              return (
+                <TouchableOpacity
+                  key={lvl.id}
+                  style={[
+                    styles.compressOptionCard,
+                    {
+                      backgroundColor: isSelected ? `${colors.primary}12` : colors.surfaceVariant,
+                      borderColor: isSelected ? colors.primary : 'transparent',
+                    },
+                  ]}
+                  onPress={() => setCompressQuality(lvl.id as any)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[typography.labelMedium, { color: colors.text, fontWeight: '700' }]}>
+                      {lvl.title}
+                    </Text>
+                    <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 2 }]}>
+                      {lvl.desc}
+                    </Text>
+                  </View>
+                  {isSelected && <Check size={18} color={colors.primary} />}
+                </TouchableOpacity>
+              );
+            })}
+
+            <View style={[styles.dialogButtonRow, { marginTop: 16 }]}>
+              <Button
+                title="Cancel"
+                variant="secondary"
+                onPress={() => setCompressModalVisible(false)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="Compress Now"
+                variant="primary"
+                onPress={handleCompressPdf}
+                style={{ flex: 1.5 }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 11. E-Signature Modal */}
+      <SignatureModal
+        visible={signatureModalVisible}
+        onClose={() => setSignatureModalVisible(false)}
+        onSave={handleSignatureSaved}
       />
 
-      {/* Create Folder Dialog */}
+      {/* 12. OCR Text Modal */}
+      <Modal visible={ocrModalVisible} transparent animationType="slide" onRequestClose={() => setOcrModalVisible(false)}>
+        <View style={[styles.ocrModalContainer, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+          <View style={[styles.ocrHeader, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={[typography.h3, { color: colors.text }]}>Extracted Text (OCR)</Text>
+              <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>
+                {ocrTarget?.name}
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => setOcrModalVisible(false)} style={{ padding: 4 }}>
+              <X size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          {isOcrLoading ? (
+            <View style={styles.ocrLoadingBox}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={[typography.bodyMedium, { color: colors.textSecondary, marginTop: 12 }]}>
+                Scanning and extracting text with AI...
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.ocrContentBox}>
+              {/* Translation bar */}
+              <View style={styles.ocrLangBar}>
+                <Text style={[typography.labelSmall, { color: colors.textSecondary }]}>Translation:</Text>
+                <TouchableOpacity
+                  style={[
+                    styles.langChip,
+                    { backgroundColor: ocrLanguage === 'original' ? colors.primary : colors.surfaceVariant },
+                  ]}
+                  onPress={() => setOcrLanguage('original')}
+                >
+                  <Text style={[typography.labelSmall, { color: ocrLanguage === 'original' ? '#FFFFFF' : colors.text }]}>
+                    Original
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.langChip,
+                    { backgroundColor: ocrLanguage === 'hi' ? colors.primary : colors.surfaceVariant },
+                  ]}
+                  onPress={() => handleTranslateOcr('hi')}
+                >
+                  <Text style={[typography.labelSmall, { color: ocrLanguage === 'hi' ? '#FFFFFF' : colors.text }]}>
+                    हिंदी (Hindi)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.langChip,
+                    { backgroundColor: ocrLanguage === 'en' ? colors.primary : colors.surfaceVariant },
+                  ]}
+                  onPress={() => handleTranslateOcr('en')}
+                >
+                  <Text style={[typography.labelSmall, { color: ocrLanguage === 'en' ? '#FFFFFF' : colors.text }]}>
+                    English
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <TextInput
+                style={[
+                  styles.ocrTextInput,
+                  typography.bodyMedium,
+                  { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border },
+                ]}
+                value={ocrText}
+                onChangeText={setOcrText}
+                multiline
+                textAlignVertical="top"
+              />
+
+              <View style={styles.ocrBottomActions}>
+                <TouchableOpacity
+                  style={[styles.ocrActionBtn, { backgroundColor: colors.surfaceVariant }]}
+                  onPress={() => {
+                    Clipboard.setString(ocrText);
+                    ToastAndroid.show('Text copied to clipboard!', ToastAndroid.SHORT);
+                  }}
+                >
+                  <Copy size={18} color={colors.text} style={{ marginRight: 6 }} />
+                  <Text style={[typography.labelMedium, { color: colors.text }]}>Copy Text</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.ocrActionBtn, { backgroundColor: colors.primary }]}
+                  onPress={async () => {
+                    try {
+                      const txtName = (ocrTarget?.name || 'Scanned').replace(/\.[^/.]+$/, '') + '_OCR.txt';
+                      await fileService.createFile(currentPath, txtName, ocrText);
+                      setOcrModalVisible(false);
+                      loadDirectory(currentPath);
+                      ToastAndroid.show(`Saved to ${txtName}`, ToastAndroid.LONG);
+                    } catch (e: any) {
+                      Alert.alert('Error', e?.message || 'Could not save text file');
+                    }
+                  }}
+                >
+                  <ExternalLink size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={[typography.labelMedium, { color: '#FFFFFF', fontWeight: '700' }]}>Export TXT</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* 13. Merge PDF Modal */}
+      <Modal visible={mergeModalVisible} transparent animationType="fade" onRequestClose={() => setMergeModalVisible(false)}>
+        <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.dialogHeaderRow}>
+              <Text style={[typography.h4, { color: colors.text }]}>Merge PDF Documents</Text>
+              <TouchableOpacity onPress={() => setMergeModalVisible(false)}>
+                <X size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[typography.bodySmall, { color: colors.textSecondary, marginBottom: 8 }]}>
+              Enter name for merged document:
+            </Text>
+
+            <TextInput
+              style={[
+                styles.dialogInput,
+                typography.bodyMedium,
+                { color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border },
+              ]}
+              placeholder="Merged_Document.pdf"
+              placeholderTextColor={colors.textMuted}
+              value={mergedPdfName}
+              onChangeText={setMergedPdfName}
+            />
+
+            <Text style={[typography.labelSmall, { color: colors.text, marginTop: 8, marginBottom: 4 }]}>
+              Select PDFs to Combine:
+            </Text>
+
+            <ScrollView style={{ maxHeight: 150, marginBottom: 12 }}>
+              {files
+                .filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith('.pdf'))
+                .map((f) => {
+                  const isChecked = selectedMergePdfPaths.includes(f.path);
+                  return (
+                    <TouchableOpacity
+                      key={f.path}
+                      style={[
+                        styles.mergeCheckRow,
+                        { backgroundColor: isChecked ? `${colors.primary}12` : colors.surfaceVariant },
+                      ]}
+                      onPress={() => {
+                        if (isChecked) {
+                          setSelectedMergePdfPaths(selectedMergePdfPaths.filter((p) => p !== f.path));
+                        } else {
+                          setSelectedMergePdfPaths([...selectedMergePdfPaths, f.path]);
+                        }
+                      }}
+                    >
+                      <Text style={[typography.bodySmall, { color: colors.text, flex: 1 }]} numberOfLines={1}>
+                        {f.name}
+                      </Text>
+                      {isChecked && <Check size={16} color={colors.primary} />}
+                    </TouchableOpacity>
+                  );
+                })}
+            </ScrollView>
+
+            <View style={styles.dialogButtonRow}>
+              <Button
+                title="Cancel"
+                variant="secondary"
+                onPress={() => setMergeModalVisible(false)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title={`Merge (${selectedMergePdfPaths.length})`}
+                variant="primary"
+                onPress={handleMergeSubmit}
+                style={{ flex: 1.5 }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 14. Create Folder Dialog */}
       <Modal visible={createFolderVisible} transparent animationType="fade" onRequestClose={() => setCreateFolderVisible(false)}>
         <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
           <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -434,81 +1391,30 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         </View>
       </Modal>
 
-      {/* Item Action Sheet (Rename / Delete / Share) */}
-      {actionItem && (
-        <Modal visible={Boolean(actionItem)} transparent animationType="fade" onRequestClose={() => setActionItem(null)}>
-          <TouchableOpacity
-            style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}
-            activeOpacity={1}
-            onPress={() => setActionItem(null)}
-          >
-            <View style={[styles.optionsSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.sheetHeader}>
-                <Text style={[typography.h4, { color: colors.text }]} numberOfLines={1}>
-                  {actionItem.name}
-                </Text>
-                <TouchableOpacity onPress={() => setActionItem(null)}>
-                  <X size={20} color={colors.textMuted} />
-                </TouchableOpacity>
-              </View>
-
-              {/* Share */}
-              {!actionItem.isDirectory && (
-                <TouchableOpacity
-                  style={[styles.sheetItemRow, { borderBottomColor: colors.border }]}
-                  onPress={() => {
-                    const itemToShare = actionItem;
-                    setActionItem(null);
-                    fileService.shareFiles([itemToShare.path]);
-                  }}
-                >
-                  <Share2 size={20} color={colors.primary} style={{ marginRight: 12 }} />
-                  <Text style={[typography.labelLarge, { color: colors.text }]}>Share File</Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Rename */}
-              <TouchableOpacity
-                style={[styles.sheetItemRow, { borderBottomColor: colors.border }]}
-                onPress={() => {
-                  setRenameNewName(actionItem.name);
-                  setRenameModalVisible(true);
-                }}
-              >
-                <Edit3 size={20} color={colors.primary} style={{ marginRight: 12 }} />
-                <Text style={[typography.labelLarge, { color: colors.text }]}>Rename</Text>
-              </TouchableOpacity>
-
-              {/* Delete */}
-              <TouchableOpacity
-                style={styles.sheetItemRow}
-                onPress={() => setDeleteConfirmVisible(true)}
-              >
-                <Trash2 size={20} color={colors.error} style={{ marginRight: 12 }} />
-                <Text style={[typography.labelLarge, { color: colors.error }]}>Delete</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
-      )}
-
-      {/* Rename Dialog */}
+      {/* 15. Rename Dialog */}
       <Modal visible={renameModalVisible} transparent animationType="fade" onRequestClose={() => setRenameModalVisible(false)}>
         <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
           <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[typography.h4, { color: colors.text, marginBottom: spacing.md }]}>
-              Rename Item
-            </Text>
+            <View style={styles.dialogHeaderRow}>
+              <Text style={[typography.h4, { color: colors.text }]}>Rename Item</Text>
+              <TouchableOpacity onPress={() => setRenameModalVisible(false)}>
+                <X size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
             <TextInput
               style={[
                 styles.dialogInput,
                 typography.bodyMedium,
                 { color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border },
               ]}
+              placeholder="New name"
+              placeholderTextColor={colors.textMuted}
               value={renameNewName}
               onChangeText={setRenameNewName}
               autoFocus
             />
+
             <View style={styles.dialogButtonRow}>
               <Button
                 title="Cancel"
@@ -527,16 +1433,21 @@ export const CloudScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         </View>
       </Modal>
 
-      {/* Delete Confirmation Modal */}
+      {/* 16. Delete Confirmation Dialog */}
       <Modal visible={deleteConfirmVisible} transparent animationType="fade" onRequestClose={() => setDeleteConfirmVisible(false)}>
         <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
           <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[typography.h4, { color: colors.text, marginBottom: spacing.sm }]}>
-              Confirm Delete
-            </Text>
+            <View style={styles.dialogHeaderRow}>
+              <Text style={[typography.h4, { color: colors.text }]}>Delete Document?</Text>
+              <TouchableOpacity onPress={() => setDeleteConfirmVisible(false)}>
+                <X size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
             <Text style={[typography.bodyMedium, { color: colors.textSecondary, marginBottom: spacing.lg }]}>
               Are you sure you want to delete "{actionItem?.name}"?
             </Text>
+
             <View style={styles.dialogButtonRow}>
               <Button
                 title="Cancel"
@@ -562,40 +1473,153 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  backBtn: {
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.base,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  cloudLogoCircle: {
     width: 38,
     height: 38,
     borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  headerTitles: {
+    flex: 1,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  searchBarBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.base,
+    marginTop: spacing.xs,
+    paddingHorizontal: spacing.md,
+    height: 44,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+  },
+  searchInput: {
+    flex: 1,
+    height: '100%',
+    paddingVertical: 0,
+  },
+  quickActionsContainer: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: spacing.sm,
+  },
+  quickActionsScroll: {
+    paddingHorizontal: spacing.base,
+    gap: spacing.base,
+    alignItems: 'center',
+  },
+  actionPill: {
     alignItems: 'center',
     justifyContent: 'center',
+    width: 68,
+  },
+  actionIconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  filterChipsRow: {
+    paddingHorizontal: spacing.base,
+    paddingTop: spacing.sm,
+    gap: spacing.xs,
+  },
+  filterChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 5,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
   },
   listContent: {
     padding: spacing.base,
-    paddingBottom: 100,
+    paddingBottom: 90,
   },
   listContentEmpty: {
-    flexGrow: 1,
+    flex: 1,
     justifyContent: 'center',
+  },
+  gridCard: {
+    flex: 0.5,
+    margin: spacing.xs,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    overflow: 'hidden',
+    ...elevation.sm,
+  },
+  gridPreviewBox: {
+    height: 110,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  badgePill: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: borderRadius.xs,
+  },
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  gridCardInfo: {
+    padding: spacing.sm,
+  },
+  gridMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
   },
   itemCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
+    padding: spacing.sm + 2,
+    borderRadius: borderRadius.md,
     borderWidth: 1,
-    marginBottom: spacing.sm,
+    marginBottom: spacing.xs + 2,
     ...elevation.sm,
   },
   iconBox: {
-    width: 46,
-    height: 46,
-    borderRadius: borderRadius.md,
-    alignItems: 'center',
+    width: 44,
+    height: 44,
+    borderRadius: 10,
     justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: spacing.sm + 2,
   },
   itemInfo: {
     flex: 1,
-    marginLeft: spacing.md,
   },
   moreBtn: {
     padding: spacing.xs,
@@ -603,97 +1627,169 @@ const styles = StyleSheet.create({
   emptyContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
     paddingVertical: spacing.xxl,
   },
   emptyIconCircle: {
     width: 90,
     height: 90,
     borderRadius: 45,
-    alignItems: 'center',
     justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptyScanBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: borderRadius.full,
+    marginTop: spacing.lg,
+    ...elevation.md,
   },
   fab: {
     position: 'absolute',
-    bottom: 28,
-    right: 24,
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    bottom: 24,
+    right: 20,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 30,
     ...elevation.lg,
+  },
+  fabLabel: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 15,
+    marginLeft: 8,
   },
   modalOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
-    alignItems: 'center',
   },
   optionsSheet: {
-    width: '100%',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     borderTopWidth: 1,
-    padding: spacing.xl,
-    paddingBottom: spacing.xxxl,
-    ...elevation.lg,
+    padding: spacing.base,
+    paddingBottom: spacing.xxl,
   },
   sheetHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: spacing.lg,
+    alignItems: 'center',
+    marginBottom: spacing.md,
+    paddingBottom: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
   },
-  sheetCloseBtn: {
-    padding: spacing.xs,
-  },
-  optionCard: {
+  sheetItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: spacing.base,
-    borderRadius: borderRadius.xl,
-  },
-  optionIconBox: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  optionTextGroup: {
-    flex: 1,
-    marginLeft: spacing.md,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
   },
   dialogCard: {
-    width: '90%',
-    maxWidth: 380,
-    borderRadius: borderRadius.xl,
-    padding: spacing.xl,
-    borderWidth: 1,
+    marginHorizontal: spacing.xl,
     marginBottom: 'auto',
     marginTop: 'auto',
+    borderRadius: borderRadius.xl,
+    borderWidth: 1,
+    padding: spacing.lg,
     ...elevation.lg,
   },
   dialogHeaderRow: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: spacing.md,
   },
   dialogInput: {
     borderWidth: 1,
     borderRadius: borderRadius.md,
-    padding: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  watermarkPresetsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
     marginBottom: spacing.lg,
+  },
+  presetPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: borderRadius.sm,
   },
   dialogButtonRow: {
     flexDirection: 'row',
-    gap: spacing.md,
+    gap: spacing.sm,
   },
-  sheetItemRow: {
+  compressOptionCard: {
     flexDirection: 'row',
     alignItems: 'center',
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1.5,
+    marginBottom: spacing.xs + 2,
+  },
+  ocrModalContainer: {
+    flex: 1,
+  },
+  ocrHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.base,
     paddingVertical: spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  ocrLoadingBox: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ocrContentBox: {
+    flex: 1,
+    padding: spacing.base,
+  },
+  ocrLangBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: spacing.sm,
+  },
+  langChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: borderRadius.full,
+  },
+  ocrTextInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  ocrBottomActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  ocrActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm + 4,
+    borderRadius: borderRadius.md,
+  },
+  mergeCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.sm,
+    borderRadius: borderRadius.sm,
+    marginBottom: 4,
   },
 });

@@ -12,6 +12,7 @@ import {
   Animated,
   Easing,
   AppState,
+  ToastAndroid,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -140,11 +141,12 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
   const grantPageYRef = useRef<number>(0);
   const initialGestureValRef = useRef<number>(0);
 
-  // Subtitles (Real tracks only, Default Off, Small Font)
+  // Subtitles (Real tracks only, Default Auto-Selected if present)
   const [hasSubtitles, setHasSubtitles] = useState<boolean>(false);
   const [subtitleTracks, setSubtitleTracks] = useState<{ index: number; language: string }[]>([]);
+  const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState<number>(-1);
   const [selectedSubtitleLang, setSelectedSubtitleLang] = useState<string>('Off');
-  const [currentSubtitleText] = useState<string>('');
+  const [currentSubtitleText, setCurrentSubtitleText] = useState<string>('');
 
   // UI / Controls Visibility & Screen Lock
   const [showControls, setShowControls] = useState<boolean>(true);
@@ -329,15 +331,24 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
     // Audio tracks
     if (event.nativeEvent.audioTracks && event.nativeEvent.audioTracks.length > 0) {
       setAudioTracks(event.nativeEvent.audioTracks);
-      setSelectedAudioTrack(event.nativeEvent.audioTracks[0].index);
+      setSelectedAudioTrack((prev) => (prev >= 0 && prev < event.nativeEvent.audioTracks!.length ? prev : 0));
+    } else {
+      setAudioTracks([]);
+      setSelectedAudioTrack(-1);
     }
 
     // Subtitle tracks
     if (event.nativeEvent.subtitleTracks && event.nativeEvent.subtitleTracks.length > 0) {
       setSubtitleTracks(event.nativeEvent.subtitleTracks);
       setHasSubtitles(true);
+      setSelectedSubtitleTrack(0);
+      setSelectedSubtitleLang(event.nativeEvent.subtitleTracks[0].language);
     } else {
+      setSubtitleTracks([]);
       setHasSubtitles(false);
+      setSelectedSubtitleTrack(-1);
+      setSelectedSubtitleLang('Off');
+      setCurrentSubtitleText('');
     }
   };
 
@@ -795,13 +806,9 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
           }
           const currentMode = gestureModeRef.current;
 
-          // 1. Zoom release
+          // 1. Zoom release (Keep user-chosen zoom level intact)
           if (currentMode === 'zoom') {
             pinchStartDistRef.current = 0;
-            if (zoomScaleRef.current < 1.05) {
-              zoomScaleRef.current = 1.0;
-              setZoomScale(1.0);
-            }
           }
 
           // 2. Brightness release: final hardware sync
@@ -857,25 +864,16 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
             const isDoubleTap = now - lastTapRef.current < 280;
 
             if (isDoubleTap) {
-              // If zoomed in > 1.05, double-tap resets zoom back to normal 1.0x!
-              if (zoomScaleRef.current > 1.05) {
-                zoomScaleRef.current = 1.0;
-                setZoomScale(1.0);
-                setHudType('zoom');
-                setHudValue(100);
-                setTimeout(() => setHudType(null), 500);
+              // Generous 50% / 50% split for double tap: left = -10s, right = +10s
+              const screenW = windowWidthRef.current || 400;
+              if (tapX < screenW * 0.5) {
+                handleSkip(-10);
+                setDoubleTapFeedback('left');
+                setTimeout(() => setDoubleTapFeedback(null), 450);
               } else {
-                // Generous 50% / 50% split for double tap: left = -10s, right = +10s
-                const screenW = windowWidthRef.current || 400;
-                if (tapX < screenW * 0.5) {
-                  handleSkip(-10);
-                  setDoubleTapFeedback('left');
-                  setTimeout(() => setDoubleTapFeedback(null), 450);
-                } else {
-                  handleSkip(10);
-                  setDoubleTapFeedback('right');
-                  setTimeout(() => setDoubleTapFeedback(null), 450);
-                }
+                handleSkip(10);
+                setDoubleTapFeedback('right');
+                setTimeout(() => setDoubleTapFeedback(null), 450);
               }
               resetControlsTimer();
             } else {
@@ -933,17 +931,19 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
             isLooping={false}
             resizeMode="contain"
             selectedAudioTrack={selectedAudioTrack}
+            selectedSubtitleTrack={selectedSubtitleTrack}
             onVideoLoad={handleVideoLoad}
             onVideoProgress={handleVideoProgress}
             onVideoEnd={handleVideoEnd}
+            onSubtitleCue={(e) => setCurrentSubtitleText(e.nativeEvent.text || '')}
           />
         </View>
 
-        {/* Subtitles Overlay: ONLY shown if real subtitle exists & enabled, with small font */}
-        {selectedSubtitleLang !== 'Off' && hasSubtitles && currentSubtitleText.length > 0 && (
+        {/* Floating Subtitle Overlay */}
+        {selectedSubtitleTrack !== -1 && currentSubtitleText.trim().length > 0 && (
           <View style={styles.subtitlesContainer} pointerEvents="none">
             <View style={styles.subtitlesBox}>
-              <Text style={styles.subtitlesText}>{currentSubtitleText}</Text>
+              <Text style={styles.subtitlesText}>{currentSubtitleText.trim()}</Text>
             </View>
           </View>
         )}
@@ -1130,7 +1130,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
               onPress={() => setSubtitleModalVisible(true)}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <Subtitles size={20} color={selectedSubtitleLang !== 'Off' ? '#69F0AE' : '#FFFFFF'} />
+              <Subtitles size={20} color={selectedSubtitleTrack !== -1 ? '#69F0AE' : '#FFFFFF'} />
             </TouchableOpacity>
           </View>
         </View>
@@ -1291,21 +1291,23 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
 
             {/* Turn Off Option */}
             <TouchableOpacity
-              style={[styles.modalItemRow, selectedSubtitleLang === 'Off' && styles.activeModalRow]}
+              style={[styles.modalItemRow, selectedSubtitleTrack === -1 && styles.activeModalRow]}
               onPress={() => {
+                setSelectedSubtitleTrack(-1);
                 setSelectedSubtitleLang('Off');
                 setSubtitleModalVisible(false);
+                ToastAndroid.show('Subtitles turned off', ToastAndroid.SHORT);
               }}
             >
               <Text
                 style={[
                   styles.modalItemText,
-                  selectedSubtitleLang === 'Off' && { color: '#69F0AE', fontWeight: '700' },
+                  selectedSubtitleTrack === -1 && { color: '#69F0AE', fontWeight: '700' },
                 ]}
               >
                 Off (Turn Off Subtitles)
               </Text>
-              {selectedSubtitleLang === 'Off' && <Check size={18} color="#69F0AE" />}
+              {selectedSubtitleTrack === -1 && <Check size={18} color="#69F0AE" />}
             </TouchableOpacity>
 
             {/* Available Tracks if present */}
@@ -1313,21 +1315,23 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
               subtitleTracks.map((sub) => (
                 <TouchableOpacity
                   key={sub.index}
-                  style={[styles.modalItemRow, selectedSubtitleLang === sub.language && styles.activeModalRow]}
+                  style={[styles.modalItemRow, selectedSubtitleTrack === sub.index && styles.activeModalRow]}
                   onPress={() => {
+                    setSelectedSubtitleTrack(sub.index);
                     setSelectedSubtitleLang(sub.language);
                     setSubtitleModalVisible(false);
+                    ToastAndroid.show(`Subtitle: ${sub.language}`, ToastAndroid.SHORT);
                   }}
                 >
                   <Text
                     style={[
                       styles.modalItemText,
-                      selectedSubtitleLang === sub.language && { color: '#69F0AE', fontWeight: '700' },
+                      selectedSubtitleTrack === sub.index && { color: '#69F0AE', fontWeight: '700' },
                     ]}
                   >
                     {sub.language}
                   </Text>
-                  {selectedSubtitleLang === sub.language && <Check size={18} color="#69F0AE" />}
+                  {selectedSubtitleTrack === sub.index && <Check size={18} color="#69F0AE" />}
                 </TouchableOpacity>
               ))
             ) : (
@@ -1365,6 +1369,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
                   onPress={() => {
                     setSelectedAudioTrack(tr.index);
                     setAudioModalVisible(false);
+                    ToastAndroid.show(`Audio: ${tr.language}`, ToastAndroid.SHORT);
                   }}
                 >
                   <Text

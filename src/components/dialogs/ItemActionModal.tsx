@@ -210,7 +210,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
               style={styles.actionRow}
               onPress={() => {
                 onClose();
-                onRename(item);
+                setTimeout(() => onRename(item), 150);
               }}
             >
               <View style={[styles.actionIconPill, { backgroundColor: colors.surfaceVariant }]}>
@@ -230,7 +230,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
                 style={styles.actionRow}
                 onPress={() => {
                   onClose();
-                  onExtract(item);
+                  setTimeout(() => onExtract(item), 150);
                 }}
               >
                 <View style={[styles.actionIconPill, { backgroundColor: '#E0F7FA' }]}>
@@ -252,7 +252,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
               style={styles.actionRow}
               onPress={() => {
                 onClose();
-                onCompress(item);
+                setTimeout(() => onCompress(item), 150);
               }}
             >
               <View style={[styles.actionIconPill, { backgroundColor: colors.surfaceVariant }]}>
@@ -323,7 +323,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
                 style={styles.actionRow}
                 onPress={() => {
                   onClose();
-                  onLockInVault(item);
+                  setTimeout(() => onLockInVault(item), 150);
                 }}
               >
                 <View style={[styles.actionIconPill, { backgroundColor: '#E8F5E9' }]}>
@@ -345,7 +345,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
               style={styles.actionRow}
               onPress={() => {
                 onClose();
-                onDetails(item);
+                setTimeout(() => onDetails(item), 150);
               }}
             >
               <View style={[styles.actionIconPill, { backgroundColor: colors.surfaceVariant }]}>
@@ -367,7 +367,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
                 style={styles.actionRow}
                 onPress={() => {
                   onClose();
-                  onChecksum(item);
+                  setTimeout(() => onChecksum(item), 150);
                 }}
               >
                 <View style={[styles.actionIconPill, { backgroundColor: colors.surfaceVariant }]}>
@@ -389,7 +389,7 @@ export const ItemActionModal: React.FC<ItemActionModalProps> = ({
               style={[styles.actionRow, { marginBottom: spacing.md }]}
               onPress={() => {
                 onClose();
-                onDelete(item);
+                setTimeout(() => onDelete(item), 150);
               }}
             >
               <View style={[styles.actionIconPill, { backgroundColor: colors.errorBackground }]}>

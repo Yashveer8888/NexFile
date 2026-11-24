@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Modal,
   View,
@@ -13,63 +13,60 @@ import {
   ToastAndroid,
   ActivityIndicator,
   Clipboard,
-  PanResponder,
 } from 'react-native';
 import {
   Camera,
-  X,
-  RotateCw,
-  Plus,
+  RotateCcw,
+  PlusSquare,
+  Crop as CropIcon,
   Trash2,
   Image as ImageIcon,
   Check,
-  FileText,
   Scan,
   CreditCard,
-  BookOpen,
-  Presentation,
   QrCode,
-  Sparkles,
-  Sliders,
-  Type,
-  PenTool,
-  Stamp,
   Copy,
-  Languages,
-  Grid,
   ChevronLeft,
   ChevronRight,
-  Download,
-  Share2,
+  ArrowLeft,
+  Edit2,
   Maximize2,
 } from 'lucide-react-native';
-import Svg, { Path as SvgPath, Line, Circle } from 'react-native-svg';
-import { useThemeStore } from '../../app/store/useThemeStore';
 import { usePdfStore } from '../../app/store/usePdfStore';
-import { typography } from '../../theme/typography';
-import { spacing, borderRadius } from '../../theme/spacing';
-import { Button } from '../../components/common/Button';
 import { DocumentFilterType, ScanningMode, PageSize, PageCropCoords } from '../../types/pdf';
 import { pdfService } from '../../services/pdf/pdfService';
 import { fileService } from '../../services/filesystem/fileService';
-import { SignatureModal } from '../../components/dialogs/SignatureModal';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface PdfScannerModalProps {
   visible: boolean;
   onClose: () => void;
   onSaveSuccess: (savedPath: string) => void;
   targetDirectory?: string;
+  initialMode?: ScanningMode;
+  initialAction?: 'camera' | 'gallery';
 }
+
+const getDefaultDocTitle = () => {
+  const d = new Date();
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const yyyy = d.getFullYear();
+  const hh = pad(d.getHours());
+  const min = pad(d.getMinutes());
+  return `New Doc ${mm}-${dd}-${yyyy} ${hh}.${min}`;
+};
 
 export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
   visible,
   onClose,
   onSaveSuccess,
   targetDirectory,
+  initialMode,
+  initialAction,
 }) => {
-  const { colors } = useThemeStore();
   const {
     scannedPages,
     activePageIndex,
@@ -78,99 +75,61 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
     removeScannedPage,
     rotateScannedPage,
     setPageFilter,
-    setPageAdjustments,
     setPageCrop,
-    setPageSize,
-    reorderPages,
-    saveScannedPdf,
-    combineIdCardPages,
     clearScanner,
+    saveScannedPdf,
   } = usePdfStore();
 
-  // Mode Selection
   const [activeMode, setActiveMode] = useState<ScanningMode>('document');
-  const [documentTitle, setDocumentTitle] = useState('Scanned_Document');
-  const [selectedPageSize, setSelectedPageSize] = useState<PageSize>('A4');
+  const [documentTitle, setDocumentTitle] = useState(getDefaultDocTitle());
+  const [isTitleModalVisible, setIsTitleModalVisible] = useState(false);
+  const [tempTitle, setTempTitle] = useState('');
   const [isSaving, setIsSaving] = useState(false);
-  const [selectedQuality, setSelectedQuality] = useState<'high' | 'medium' | 'low'>('high');
-  const [exportFormat, setExportFormat] = useState<'pdf' | 'images' | 'txt'>('pdf');
-  const [showGrid, setShowGrid] = useState(false);
 
-  // Active Tool Panel: 'filters' | 'adjust' | 'crop' | 'ocr' | 'watermark' | 'signature' | null
-  const [activeTool, setActiveTool] = useState<string | null>('filters');
+  // Apply to all pages toggle
+  const [applyToAllPages, setApplyToAllPages] = useState(false);
 
-  // Sliders for Adjustments
-  const [brightness, setBrightness] = useState<number>(0);
-  const [contrast, setContrast] = useState<number>(0);
-
-  // Watermark state
-  const [watermarkText, setWatermarkText] = useState<string>('');
-  const [watermarkModalVisible, setWatermarkModalVisible] = useState(false);
-
-  // Signature state
-  const [signatureModalVisible, setSignatureModalVisible] = useState(false);
-  const [signatureSvgPaths, setSignatureSvgPaths] = useState<string[]>([]);
-  const [signatureColor, setSignatureColor] = useState<string>('#1E293B');
-
-  // OCR modal state
-  const [ocrModalVisible, setOcrModalVisible] = useState(false);
-  const [ocrText, setOcrText] = useState<string>('');
-  const [isOcrLoading, setIsOcrLoading] = useState(false);
-  const [translatedLang, setTranslatedLang] = useState<string | null>(null);
+  // Crop mode overlay toggle
+  const [isCropMode, setIsCropMode] = useState(false);
 
   // QR / Barcode Scan Result Modal
   const [qrResult, setQrResult] = useState<{ displayValue: string; rawValue: string } | null>(null);
 
-  // Save Modal Options
-  const [saveModalVisible, setSaveModalVisible] = useState(false);
-
-  // Crop Corners (Normalized 0.0 - 1.0)
-  const [cropPoints, setCropPoints] = useState<PageCropCoords>({
-    tlX: 0.05,
-    tlY: 0.05,
-    trX: 0.95,
-    trY: 0.05,
-    brX: 0.95,
-    brY: 0.95,
-    blX: 0.05,
-    blY: 0.95,
-  });
-
   const activePage = scannedPages[activePageIndex] || scannedPages[0];
-
   const hasAutoLaunchedRef = useRef(false);
 
-  // Initialize title and auto-launch in-app batch camera on open
+  // Auto-launch camera or gallery on opening
   useEffect(() => {
     if (visible) {
+      if (initialMode) {
+        setActiveMode(initialMode);
+      }
       if (scannedPages.length === 0) {
-        const today = new Date();
-        const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-        setDocumentTitle(`Scanned_Doc_${dateStr}`);
+        setDocumentTitle(getDefaultDocTitle());
 
         if (!hasAutoLaunchedRef.current) {
           hasAutoLaunchedRef.current = true;
-          // Launch in-app document scanner camera directly
           setTimeout(() => {
-            handleCameraCapture('batch');
+            if (initialAction === 'gallery') {
+              handleGalleryPick();
+            } else {
+              const targetScanMode =
+                initialMode === 'idcard' ||
+                initialMode === 'book' ||
+                initialMode === 'qrcode' ||
+                initialMode === 'whiteboard'
+                  ? initialMode
+                  : 'batch';
+              handleCameraCapture(targetScanMode as any);
+            }
           }, 200);
         }
       }
     } else {
       hasAutoLaunchedRef.current = false;
+      setIsCropMode(false);
     }
-  }, [visible]);
-
-  // Sync adjustments with active page
-  useEffect(() => {
-    if (activePage) {
-      setBrightness(activePage.brightness || 0);
-      setContrast(activePage.contrast || 0);
-      if (activePage.crop) {
-        setCropPoints(activePage.crop);
-      }
-    }
-  }, [activePageIndex, activePage?.id]);
+  }, [visible, initialMode, initialAction]);
 
   // IN-APP CAMERA & BATCH SCAN CAPTURE
   const handleCameraCapture = async (overrideMode?: 'batch' | 'single' | 'idcard') => {
@@ -178,11 +137,19 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
       const mode = overrideMode || (activeMode === 'idcard' ? 'idcard' : 'batch');
       const isInitialLaunch = scannedPages.length === 0;
       const capturedPaths = await pdfService.launchBatchScanner({ mode });
+
       if (capturedPaths && capturedPaths.length > 0) {
-        if (isInitialLaunch) {
-          clearScanner();
+        if (overrideMode === 'single' && activePage) {
+          // Replace current page with newly captured photo
+          removeScannedPage(activePage.id);
+          addScannedPage(capturedPaths[0]);
+          ToastAndroid.show('Page retaken successfully', ToastAndroid.SHORT);
+        } else {
+          if (isInitialLaunch) {
+            clearScanner();
+          }
+          addScannedPages(capturedPaths);
         }
-        addScannedPages(capturedPaths);
 
         // If in QR/Barcode mode, automatically detect barcode on the photo
         if (activeMode === 'qrcode') {
@@ -194,7 +161,6 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
           }
         }
       } else if (isInitialLaunch && (!capturedPaths || capturedPaths.length === 0)) {
-        // User backed out or tapped Discard on empty scanner
         onClose();
       }
     } catch (e: any) {
@@ -203,7 +169,7 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
     }
   };
 
-  // REAL GALLERY PICK
+  // GALLERY PICK
   const handleGalleryPick = async () => {
     try {
       const pickedPath = await pdfService.pickImageScan();
@@ -223,73 +189,57 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
     }
   };
 
-  // OCR EXTRACTION
-  const handleExtractText = async () => {
+  // DELETE CURRENT ACTIVE PAGE
+  const handleDeleteActivePage = () => {
     if (!activePage) return;
-    setIsOcrLoading(true);
-    setOcrModalVisible(true);
-    setTranslatedLang(null);
-    try {
-      const text = await pdfService.extractTextFromImage(activePage.uri);
-      setOcrText(text);
+    Alert.alert(
+      'Delete Page',
+      `Delete page ${activePageIndex + 1} of ${scannedPages.length}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            if (scannedPages.length <= 1) {
+              clearScanner();
+              onClose();
+            } else {
+              removeScannedPage(activePage.id);
+              ToastAndroid.show('Page deleted', ToastAndroid.SHORT);
+            }
+          },
+        },
+      ]
+    );
+  };
 
-      // Auto Smart Title suggestion
-      if (text && text.length > 5) {
-        const lower = text.toLowerCase();
-        let suggestedPrefix = 'Doc';
-        if (lower.includes('invoice') || lower.includes('tax invoice')) suggestedPrefix = 'Invoice';
-        else if (lower.includes('receipt') || lower.includes('bill')) suggestedPrefix = 'Receipt';
-        else if (lower.includes('aadhaar') || lower.includes('government of india')) suggestedPrefix = 'Aadhaar_Card';
-        else if (lower.includes('pan card') || lower.includes('income tax department')) suggestedPrefix = 'PAN_Card';
-        else if (lower.includes('agreement') || lower.includes('contract')) suggestedPrefix = 'Agreement';
-        else if (lower.includes('passport')) suggestedPrefix = 'Passport';
-        else if (lower.includes('license') || lower.includes('driving')) suggestedPrefix = 'Driving_License';
+  // APPLY FILTER (SINGLE OR ALL PAGES)
+  const handleApplyFilter = (filterId: DocumentFilterType) => {
+    if (!activePage) return;
 
-        const dateMatch = text.match(/\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/);
-        const datePart = dateMatch ? `_${dateMatch[0].replace(/[\/\.]/g, '-')}` : `_${Date.now().toString().slice(-4)}`;
-        setDocumentTitle(`${suggestedPrefix}${datePart}`);
-      }
-    } catch (e: any) {
-      setOcrText('Could not extract text: ' + (e?.message || 'Unknown error'));
-    } finally {
-      setIsOcrLoading(false);
+    if (applyToAllPages) {
+      scannedPages.forEach((p) => {
+        setPageFilter(p.id, filterId);
+      });
+      ToastAndroid.show(`Applied "${filterLabels[filterId]}" to all pages`, ToastAndroid.SHORT);
+    } else {
+      setPageFilter(activePage.id, filterId);
     }
   };
 
-  // Simple offline translation helper
-  const handleTranslate = (lang: string) => {
-    setTranslatedLang(lang);
-    ToastAndroid.show(`Translated to ${lang}`, ToastAndroid.SHORT);
-  };
-
-  // ID Card Combine trigger
-  const handleCombineIdCard = async () => {
-    if (scannedPages.length < 2) {
-      Alert.alert('ID Card Mode', 'Please scan both the Front side (Page 1) and Back side (Page 2) of your ID card first.');
-      return;
-    }
-    try {
-      await combineIdCardPages(0, 1);
-      ToastAndroid.show('Combined Front & Back sides into single A4 page!', ToastAndroid.LONG);
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to combine ID card sides');
-    }
-  };
-
-  // Save Document
-  const handleFinalSave = async () => {
-    setSaveModalVisible(false);
+  // QUICK DONE / SAVE ACTION
+  const handleQuickDone = async () => {
+    if (scannedPages.length === 0) return;
     setIsSaving(true);
     try {
-      const q = selectedQuality === 'high' ? 95 : selectedQuality === 'medium' ? 75 : 45;
       const path = await saveScannedPdf(documentTitle, {
-        quality: q,
-        pageSize: selectedPageSize,
-        watermarkText: watermarkText.trim() || undefined,
-        format: exportFormat,
+        quality: 95,
+        pageSize: 'A4',
         targetDirectory: targetDirectory || '/storage/emulated/0/google drive files',
       });
       setIsSaving(false);
+      ToastAndroid.show('PDF Saved Successfully!', ToastAndroid.LONG);
       onSaveSuccess(path);
       onClose();
     } catch (e: any) {
@@ -298,117 +248,116 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
     }
   };
 
-  const filtersList: { id: DocumentFilterType; label: string; icon: string }[] = [
-    { id: 'magic_color', label: 'Magic Color', icon: '✨' },
-    { id: 'bw', label: 'B & W', icon: '📄' },
-    { id: 'grayscale', label: 'Grayscale', icon: '🔘' },
-    { id: 'lighten', label: 'Lighten', icon: '☀️' },
-    { id: 'original', label: 'Original', icon: '📷' },
+  // FILTER DEFINITIONS MATCHING IMAGE 6
+  const filterLabels: Record<DocumentFilterType, string> = {
+    no_shadow: 'No shadow',
+    original: 'Original',
+    lighten: 'Lighten',
+    magic_color: 'Magic Color',
+    grayscale: 'Grayscale',
+    bw: 'B&W',
+    color: 'Color',
+  };
+
+  const okenFilters: { id: DocumentFilterType; label: string; isBeta?: boolean }[] = [
+    { id: 'no_shadow', label: 'No shadow', isBeta: true },
+    { id: 'original', label: 'Original' },
+    { id: 'lighten', label: 'Lighten' },
+    { id: 'magic_color', label: 'Magic Color' },
+    { id: 'grayscale', label: 'Grayscale' },
+    { id: 'bw', label: 'B&W' },
   ];
 
-  const modesList: { id: ScanningMode; label: string; icon: any }[] = [
-    { id: 'document', label: 'Document', icon: Scan },
-    { id: 'idcard', label: 'ID Card', icon: CreditCard },
-    { id: 'book', label: 'Book Mode', icon: BookOpen },
-    { id: 'whiteboard', label: 'Whiteboard', icon: Presentation },
-    { id: 'qrcode', label: 'QR / Barcode', icon: QrCode },
-  ];
+  const currentFilter = activePage?.filter || 'original';
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        {/* Top Header Bar */}
-        <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-          <TouchableOpacity onPress={onClose} style={styles.iconBtn}>
-            <X size={22} color={colors.text} />
-          </TouchableOpacity>
-
-          <View style={styles.titleGroup}>
-            <TextInput
-              style={[styles.titleInput, typography.h4, { color: colors.text }]}
-              value={documentTitle}
-              onChangeText={setDocumentTitle}
-              placeholder="Document Title"
-              placeholderTextColor={colors.textMuted}
-            />
-            <Text style={[typography.labelSmall, { color: colors.textMuted }]}>
-              {scannedPages.length} Page(s) • {selectedPageSize}
-            </Text>
-          </View>
-
+      <View style={styles.container}>
+        {/* Top Header Bar matching Image 6 */}
+        <View style={styles.header}>
           <TouchableOpacity
-            style={styles.gridBtn}
-            onPress={() => setShowGrid((g) => !g)}
+            onPress={() => {
+              if (scannedPages.length > 0) {
+                Alert.alert(
+                  'Exit Scan',
+                  'Discard scanned pages or save document?',
+                  [
+                    { text: 'Keep Editing', style: 'cancel' },
+                    {
+                      text: 'Discard',
+                      style: 'destructive',
+                      onPress: () => {
+                        clearScanner();
+                        onClose();
+                      },
+                    },
+                    {
+                      text: 'Save',
+                      onPress: handleQuickDone,
+                    },
+                  ]
+                );
+              } else {
+                onClose();
+              }
+            }}
+            style={styles.backBtn}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <Grid size={18} color={showGrid ? colors.primary : colors.textMuted} />
+            <ArrowLeft size={24} color="#FFFFFF" />
           </TouchableOpacity>
 
-          <Button
-            title="Save"
-            size="sm"
-            variant="primary"
-            loading={isSaving}
-            disabled={scannedPages.length === 0}
-            onPress={() => setSaveModalVisible(true)}
-          />
+          {/* Editable Document Title with Dotted Underline */}
+          <TouchableOpacity
+            style={styles.titleContainer}
+            onPress={() => {
+              setTempTitle(documentTitle);
+              setIsTitleModalVisible(true);
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.titleText} numberOfLines={1}>
+              {documentTitle}
+            </Text>
+            <View style={styles.dottedLine} />
+          </TouchableOpacity>
+
+          {/* Green Done Pill Button */}
+          <TouchableOpacity
+            style={[styles.doneBtn, isSaving && { opacity: 0.7 }]}
+            onPress={handleQuickDone}
+            disabled={isSaving || scannedPages.length === 0}
+            activeOpacity={0.8}
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.doneBtnText}>Done</Text>
+            )}
+          </TouchableOpacity>
         </View>
 
-        {/* Scanning Mode Switcher Bar */}
-        <View style={[styles.modesBar, { backgroundColor: colors.surfaceVariant, borderBottomColor: colors.border }]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modesScroll}>
-            {modesList.map((m) => {
-              const IconComp = m.icon;
-              const isActive = activeMode === m.id;
-              return (
-                <TouchableOpacity
-                  key={m.id}
-                  style={[
-                    styles.modeChip,
-                    isActive && { backgroundColor: colors.primary },
-                  ]}
-                  onPress={() => {
-                    setActiveMode(m.id);
-                    if (m.id === 'whiteboard' && activePage) {
-                      setPageFilter(activePage.id, 'lighten');
-                    }
-                  }}
-                >
-                  <IconComp size={14} color={isActive ? '#FFFFFF' : colors.textSecondary} />
-                  <Text
-                    style={[
-                      typography.labelSmall,
-                      { color: isActive ? '#FFFFFF' : colors.textSecondary, marginLeft: 5, fontWeight: isActive ? '700' : '500' },
-                    ]}
-                  >
-                    {m.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-        </View>
-
-        {/* Viewfinder / Real Page Preview */}
-        <View style={styles.previewArea}>
+        {/* Center Canvas / Preview matching Image 6 */}
+        <View style={styles.canvasArea}>
           {activePage ? (
-            <View style={[styles.pageCanvas, { backgroundColor: '#1A1D24', borderColor: colors.border }]}>
-              {/* Camera Rule-of-Thirds Grid Overlay */}
-              {showGrid && (
-                <View style={styles.gridOverlay} pointerEvents="none">
-                  <View style={styles.gridLineH1} />
-                  <View style={styles.gridLineH2} />
-                  <View style={styles.gridLineV1} />
-                  <View style={styles.gridLineV2} />
-                </View>
-              )}
+            <View style={styles.imageWrapper}>
+              {/* Circular Delete Button on Top-Left of Image */}
+              <TouchableOpacity
+                style={styles.floatingDeleteBtn}
+                onPress={handleDeleteActivePage}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                activeOpacity={0.7}
+              >
+                <Trash2 size={16} color="#CCCCCC" />
+              </TouchableOpacity>
 
-              {/* REAL PHOTO DISPLAY */}
+              {/* Real Scanned Page Image */}
               <Image
                 source={{
                   uri: activePage.uri.startsWith('file://') ? activePage.uri : `file://${activePage.uri}`,
                 }}
                 style={[
-                  styles.pageRealImage,
+                  styles.previewImage,
                   {
                     transform: [{ rotate: `${activePage.rotation}deg` }],
                   },
@@ -416,677 +365,281 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
                 resizeMode="contain"
               />
 
-              {/* Watermark Live Overlay Preview */}
-              {watermarkText.trim().length > 0 && (
-                <View style={styles.watermarkOverlay} pointerEvents="none">
-                  <Text style={styles.watermarkPreviewText}>{watermarkText.toUpperCase()}</Text>
+              {/* 4-Corner Crop Overlay when crop active */}
+              {isCropMode && (
+                <View style={styles.cropOverlay} pointerEvents="none">
+                  <View style={[styles.cropCorner, styles.cornerTL]} />
+                  <View style={[styles.cropCorner, styles.cornerTR]} />
+                  <View style={[styles.cropCorner, styles.cornerBL]} />
+                  <View style={[styles.cropCorner, styles.cornerBR]} />
+                  <View style={styles.cropGuideBorder} />
                 </View>
               )}
-
-              {/* Signature Live Overlay Preview */}
-              {signatureSvgPaths.length > 0 && (
-                <View style={styles.signatureOverlayPreview} pointerEvents="none">
-                  <Svg width={110} height={55} viewBox="0 0 300 150">
-                    {signatureSvgPaths.map((d, idx) => (
-                      <SvgPath
-                        key={`sig_${idx}`}
-                        d={d}
-                        stroke={signatureColor}
-                        strokeWidth={6}
-                        fill="none"
-                        strokeLinecap="round"
-                      />
-                    ))}
-                  </Svg>
-                </View>
-              )}
-
-              {/* 4-Point Crop Lines Overlay (When Crop Tool Active) */}
-              {activeTool === 'crop' && (
-                <View style={StyleSheet.absoluteFill} pointerEvents="none">
-                  <View style={[styles.cropCornerBox, styles.cornerTL]} />
-                  <View style={[styles.cropCornerBox, styles.cornerTR]} />
-                  <View style={[styles.cropCornerBox, styles.cornerBL]} />
-                  <View style={[styles.cropCornerBox, styles.cornerBR]} />
-                </View>
-              )}
-
-              {/* Top Page Info & Mode Badge with Reorder Controls */}
-              <View style={styles.pageTopBadges}>
-                <View style={[styles.badgePill, { backgroundColor: colors.overlay, flexDirection: 'row', alignItems: 'center' }]}>
-                  {activePageIndex > 0 && (
-                    <TouchableOpacity
-                      onPress={() => {
-                        reorderPages(activePageIndex, activePageIndex - 1);
-                        usePdfStore.setState({ activePageIndex: activePageIndex - 1 });
-                        ToastAndroid.show('Page moved left', ToastAndroid.SHORT);
-                      }}
-                      style={{ paddingHorizontal: 6 }}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <ChevronLeft size={16} color="#60A5FA" />
-                    </TouchableOpacity>
-                  )}
-                  <Text style={[typography.labelSmall, { color: '#FFFFFF', fontWeight: '700' }]}>
-                    Page {activePageIndex + 1} of {scannedPages.length}
-                  </Text>
-                  {activePageIndex < scannedPages.length - 1 && (
-                    <TouchableOpacity
-                      onPress={() => {
-                        reorderPages(activePageIndex, activePageIndex + 1);
-                        usePdfStore.setState({ activePageIndex: activePageIndex + 1 });
-                        ToastAndroid.show('Page moved right', ToastAndroid.SHORT);
-                      }}
-                      style={{ paddingHorizontal: 6 }}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <ChevronRight size={16} color="#60A5FA" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                {activeMode === 'idcard' && (
-                  <View style={[styles.badgePill, { backgroundColor: '#3B82F6' }]}>
-                    <Text style={[typography.labelSmall, { color: '#FFFFFF', fontWeight: '700' }]}>
-                      {activePageIndex === 0 ? 'Front Side' : activePageIndex === 1 ? 'Back Side' : 'ID Card'}
-                    </Text>
-                  </View>
-                )}
-              </View>
             </View>
           ) : (
-            <View style={styles.emptyPrompt}>
-              <View style={[styles.emptyIconCircle, { backgroundColor: `${colors.primary}15` }]}>
-                <Scan size={56} color={colors.primary} />
-              </View>
-              <Text style={[typography.h3, { color: colors.text, marginTop: spacing.lg }]}>
-                {activeMode === 'idcard'
-                  ? 'Scan ID Card (Front & Back)'
-                  : activeMode === 'book'
-                  ? 'Scan Book Pages'
-                  : activeMode === 'qrcode'
-                  ? 'Scan QR / Barcode'
-                  : 'Scan Document'}
-              </Text>
-              <Text style={[typography.bodyMedium, { color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center' }]}>
-                {activeMode === 'idcard'
-                  ? 'Take a picture of the Front Side, then Back Side. Both will be merged on 1 page.'
-                  : 'Capture paper documents, invoices, bills or receipts with smart auto-enhance.'}
-              </Text>
-
-              <View style={styles.emptyActionButtons}>
-                <TouchableOpacity
-                  style={[styles.bigActionBtn, { backgroundColor: colors.primary }]}
-                  onPress={() => handleCameraCapture()}
-                  activeOpacity={0.8}
-                >
-                  <Camera size={22} color="#FFFFFF" style={{ marginRight: 8 }} />
-                  <Text style={[typography.labelLarge, { color: '#FFFFFF', fontWeight: 'bold' }]}>
-                    Open Camera
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.bigActionBtn,
-                    { backgroundColor: colors.surfaceVariant, borderColor: colors.border, borderWidth: 1, marginTop: spacing.md },
-                  ]}
-                  onPress={handleGalleryPick}
-                  activeOpacity={0.8}
-                >
-                  <ImageIcon size={22} color={colors.text} style={{ marginRight: 8 }} />
-                  <Text style={[typography.labelLarge, { color: colors.text, fontWeight: 'bold' }]}>
-                    Pick from Gallery
-                  </Text>
-                </TouchableOpacity>
-              </View>
+            <View style={styles.emptyContainer}>
+              <Scan size={56} color="#00C853" />
+              <Text style={styles.emptyTitle}>No Scanned Pages</Text>
+              <Text style={styles.emptySubtitle}>Tap below to start capturing documents</Text>
+              <TouchableOpacity
+                style={styles.openCameraBtn}
+                onPress={() => handleCameraCapture('batch')}
+              >
+                <Camera size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={styles.openCameraBtnText}>Open Camera</Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
 
-        {/* Multi-page Thumbnails Strip */}
+        {/* Pagination Section: < 1/3 > matching Image 6 */}
         {scannedPages.length > 0 && (
-          <View style={[styles.thumbnailsStrip, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbsScroll}>
-              {scannedPages.map((page, idx) => {
-                const isSelected = idx === activePageIndex;
+          <View style={styles.paginationRow}>
+            <TouchableOpacity
+              onPress={() => {
+                if (activePageIndex > 0) {
+                  usePdfStore.setState({ activePageIndex: activePageIndex - 1 });
+                }
+              }}
+              disabled={activePageIndex === 0}
+              style={[styles.pageNavBtn, activePageIndex === 0 && styles.pageNavDisabled]}
+              hitSlop={{ top: 10, bottom: 10, left: 14, right: 14 }}
+            >
+              <ChevronLeft size={24} color={activePageIndex === 0 ? '#444444' : '#FFFFFF'} />
+            </TouchableOpacity>
+
+            <Text style={styles.paginationText}>
+              {activePageIndex + 1}/{scannedPages.length}
+            </Text>
+
+            <TouchableOpacity
+              onPress={() => {
+                if (activePageIndex < scannedPages.length - 1) {
+                  usePdfStore.setState({ activePageIndex: activePageIndex + 1 });
+                }
+              }}
+              disabled={activePageIndex === scannedPages.length - 1}
+              style={[styles.pageNavBtn, activePageIndex === scannedPages.length - 1 && styles.pageNavDisabled]}
+              hitSlop={{ top: 10, bottom: 10, left: 14, right: 14 }}
+            >
+              <ChevronRight size={24} color={activePageIndex === scannedPages.length - 1 ? '#444444' : '#FFFFFF'} />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* "Apply to all pages ○" Toggle Row matching Image 6 */}
+        {scannedPages.length > 0 && (
+          <View style={styles.applyAllContainer}>
+            <TouchableOpacity
+              style={styles.applyAllBtn}
+              onPress={() => setApplyToAllPages((prev) => !prev)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.applyAllLabel}>Apply to all pages</Text>
+              <View style={[styles.radioCircle, applyToAllPages && styles.radioCircleActive]}>
+                {applyToAllPages && <View style={styles.radioDot} />}
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Filter Carousel Strip matching Image 6 */}
+        {scannedPages.length > 0 && (
+          <View style={styles.filtersSection}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filtersScrollContent}
+            >
+              {okenFilters.map((f) => {
+                const isSelected = currentFilter === f.id;
                 return (
                   <TouchableOpacity
-                    key={page.id}
-                    style={[
-                      styles.thumbItem,
-                      {
-                        borderColor: isSelected ? colors.primary : colors.border,
-                        backgroundColor: colors.surfaceVariant,
-                      },
-                    ]}
-                    onPress={() => usePdfStore.setState({ activePageIndex: idx })}
+                    key={f.id}
+                    style={styles.filterCardItem}
+                    onPress={() => handleApplyFilter(f.id)}
+                    activeOpacity={0.8}
                   >
-                    <Image
-                      source={{
-                        uri: page.uri.startsWith('file://') ? page.uri : `file://${page.uri}`,
-                      }}
-                      style={styles.thumbImage}
-                      resizeMode="cover"
-                    />
-                    <View style={styles.thumbOverlay}>
-                      <Text style={[typography.labelSmall, { color: '#FFFFFF', fontWeight: 'bold' }]}>
-                        {idx + 1}
-                      </Text>
-                      <TouchableOpacity
-                        style={styles.thumbDelete}
-                        onPress={() => removeScannedPage(page.id)}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      >
-                        <Trash2 size={12} color="#FF5252" />
-                      </TouchableOpacity>
+                    {/* Thumbnail Box */}
+                    <View
+                      style={[
+                        styles.filterThumbnailBox,
+                        isSelected && styles.filterThumbnailSelected,
+                      ]}
+                    >
+                      {activePage && (
+                        <Image
+                          source={{
+                            uri: activePage.uri.startsWith('file://')
+                              ? activePage.uri
+                              : `file://${activePage.uri}`,
+                          }}
+                          style={[
+                            styles.filterThumbnailImage,
+                            f.id === 'grayscale' && styles.filterGrayStyle,
+                            f.id === 'bw' && styles.filterBwStyle,
+                            f.id === 'lighten' && styles.filterLightenStyle,
+                          ]}
+                          resizeMode="cover"
+                        />
+                      )}
+
+                      {/* Red "Beta" Badge for No shadow */}
+                      {f.isBeta && (
+                        <View style={styles.betaBadge}>
+                          <Text style={styles.betaBadgeText}>Beta</Text>
+                        </View>
+                      )}
                     </View>
+
+                    {/* Filter Label */}
+                    <Text
+                      style={[
+                        styles.filterLabelText,
+                        isSelected && styles.filterLabelTextSelected,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {f.label}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
-
-              {/* ID Card combine prompt */}
-              {activeMode === 'idcard' && scannedPages.length >= 2 && (
-                <TouchableOpacity style={styles.combineThumb} onPress={handleCombineIdCard}>
-                  <CreditCard size={18} color="#FFFFFF" />
-                  <Text style={[typography.labelSmall, { color: '#FFFFFF', fontSize: 10, marginTop: 2, textAlign: 'center' }]}>
-                    Merge ID
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              {/* Add More Pages Buttons */}
-              <TouchableOpacity
-                style={[styles.addPageThumb, { borderColor: colors.primary, backgroundColor: colors.primaryLight }]}
-                onPress={() => handleCameraCapture('batch')}
-              >
-                <Camera size={18} color={colors.primary} />
-                <Text style={[typography.labelSmall, { color: colors.primary, fontSize: 10, marginTop: 2 }]}>
-                  +Camera
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.addPageThumb, { borderColor: colors.border, backgroundColor: colors.surfaceVariant }]}
-                onPress={handleGalleryPick}
-              >
-                <ImageIcon size={18} color={colors.textSecondary} />
-                <Text style={[typography.labelSmall, { color: colors.textSecondary, fontSize: 10, marginTop: 2 }]}>
-                  +Gallery
-                </Text>
-              </TouchableOpacity>
             </ScrollView>
           </View>
         )}
 
-        {/* Contextual Editing Tools Area */}
-        {activePage && (
-          <View style={[styles.toolContentArea, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
-            {activeTool === 'filters' && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersScroll}>
-                {filtersList.map((f) => {
-                  const isSelected = activePage.filter === f.id;
-                  return (
-                    <TouchableOpacity
-                      key={f.id}
-                      style={[
-                        styles.filterButton,
-                        { borderColor: isSelected ? colors.primary : colors.border },
-                        isSelected && { backgroundColor: `${colors.primary}15` },
-                      ]}
-                      onPress={() => setPageFilter(activePage.id, f.id)}
-                    >
-                      <Text style={{ fontSize: 18, marginBottom: 2 }}>{f.icon}</Text>
-                      <Text
-                        style={[
-                          typography.labelSmall,
-                          { color: isSelected ? colors.primary : colors.text, fontWeight: isSelected ? '700' : '500' },
-                        ]}
-                      >
-                        {f.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            )}
-
-            {activeTool === 'adjust' && (
-              <View style={styles.adjustPanel}>
-                <View style={styles.adjustRow}>
-                  <Text style={[typography.labelSmall, { color: colors.textSecondary, width: 80 }]}>Brightness</Text>
-                  <TouchableOpacity
-                    style={styles.adjustStepBtn}
-                    onPress={() => {
-                      const next = Math.max(-50, brightness - 10);
-                      setBrightness(next);
-                      setPageAdjustments(activePage.id, next, contrast);
-                    }}
-                  >
-                    <Text style={styles.adjustStepText}>-</Text>
-                  </TouchableOpacity>
-                  <Text style={[typography.labelMedium, { color: colors.text, width: 50, textAlign: 'center' }]}>
-                    {brightness}
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.adjustStepBtn}
-                    onPress={() => {
-                      const next = Math.min(50, brightness + 10);
-                      setBrightness(next);
-                      setPageAdjustments(activePage.id, next, contrast);
-                    }}
-                  >
-                    <Text style={styles.adjustStepText}>+</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={[styles.adjustRow, { marginTop: spacing.sm }]}>
-                  <Text style={[typography.labelSmall, { color: colors.textSecondary, width: 80 }]}>Contrast</Text>
-                  <TouchableOpacity
-                    style={styles.adjustStepBtn}
-                    onPress={() => {
-                      const next = Math.max(-50, contrast - 10);
-                      setContrast(next);
-                      setPageAdjustments(activePage.id, brightness, next);
-                    }}
-                  >
-                    <Text style={styles.adjustStepText}>-</Text>
-                  </TouchableOpacity>
-                  <Text style={[typography.labelMedium, { color: colors.text, width: 50, textAlign: 'center' }]}>
-                    {contrast}
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.adjustStepBtn}
-                    onPress={() => {
-                      const next = Math.min(50, contrast + 10);
-                      setContrast(next);
-                      setPageAdjustments(activePage.id, brightness, next);
-                    }}
-                  >
-                    <Text style={styles.adjustStepText}>+</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-
-            {activeTool === 'crop' && (
-              <View style={styles.cropActionsRow}>
-                <TouchableOpacity
-                  style={[styles.cropToolBtn, { backgroundColor: colors.surfaceVariant }]}
-                  onPress={() => {
-                    setCropPoints({ tlX: 0.05, tlY: 0.05, trX: 0.95, trY: 0.05, brX: 0.95, brY: 0.95, blX: 0.05, blY: 0.95 });
-                    setPageCrop(activePage.id, { tlX: 0.05, tlY: 0.05, trX: 0.95, trY: 0.05, brX: 0.95, brY: 0.95, blX: 0.05, blY: 0.95 });
-                    ToastAndroid.show('Auto Edge Detection Applied', ToastAndroid.SHORT);
-                  }}
-                >
-                  <Scan size={16} color={colors.primary} />
-                  <Text style={[typography.labelSmall, { color: colors.primary, marginLeft: 6 }]}>
-                    Auto Detect Edges
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.cropToolBtn, { backgroundColor: colors.surfaceVariant }]}
-                  onPress={() => {
-                    setCropPoints({ tlX: 0, tlY: 0, trX: 1, trY: 0, brX: 1, brY: 1, blX: 0, blY: 1 });
-                    setPageCrop(activePage.id, { tlX: 0, tlY: 0, trX: 1, trY: 0, brX: 1, brY: 1, blX: 0, blY: 1 });
-                    ToastAndroid.show('Reset Full Image', ToastAndroid.SHORT);
-                  }}
-                >
-                  <Maximize2 size={16} color={colors.textSecondary} />
-                  <Text style={[typography.labelSmall, { color: colors.textSecondary, marginLeft: 6 }]}>
-                    Full Page
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* Primary Bottom Actions Bar */}
-        <View style={[styles.bottomToolbar, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
+        {/* Bottom Toolbar: Retake | Add | Left | Crop matching Image 6 */}
+        <View style={styles.bottomToolbar}>
+          {/* 1. Retake */}
           <TouchableOpacity
-            style={[styles.toolTabBtn, activeTool === 'filters' && styles.toolTabActive]}
-            onPress={() => setActiveTool((prev) => (prev === 'filters' ? null : 'filters'))}
+            style={styles.toolBtn}
+            onPress={() => handleCameraCapture('single')}
+            activeOpacity={0.7}
           >
-            <Sparkles size={20} color={activeTool === 'filters' ? colors.primary : colors.textSecondary} />
-            <Text style={[styles.toolTabLabel, { color: activeTool === 'filters' ? colors.primary : colors.textSecondary }]}>
-              Filters
-            </Text>
+            <Camera size={22} color="#FFFFFF" />
+            <Text style={styles.toolBtnLabel}>Retake</Text>
           </TouchableOpacity>
 
+          {/* 2. Add */}
           <TouchableOpacity
-            style={[styles.toolTabBtn, activeTool === 'adjust' && styles.toolTabActive]}
-            onPress={() => setActiveTool((prev) => (prev === 'adjust' ? null : 'adjust'))}
+            style={styles.toolBtn}
+            onPress={() => handleCameraCapture('batch')}
+            activeOpacity={0.7}
           >
-            <Sliders size={20} color={activeTool === 'adjust' ? colors.primary : colors.textSecondary} />
-            <Text style={[styles.toolTabLabel, { color: activeTool === 'adjust' ? colors.primary : colors.textSecondary }]}>
-              Adjust
-            </Text>
+            <PlusSquare size={22} color="#FFFFFF" />
+            <Text style={styles.toolBtnLabel}>Add</Text>
           </TouchableOpacity>
 
+          {/* 3. Left (Rotate 90 CCW) */}
           <TouchableOpacity
-            style={[styles.toolTabBtn, activeTool === 'crop' && styles.toolTabActive]}
-            onPress={() => setActiveTool((prev) => (prev === 'crop' ? null : 'crop'))}
+            style={styles.toolBtn}
+            onPress={() => {
+              if (activePage) {
+                rotateScannedPage(activePage.id, -90);
+              }
+            }}
+            activeOpacity={0.7}
           >
-            <Scan size={20} color={activeTool === 'crop' ? colors.primary : colors.textSecondary} />
-            <Text style={[styles.toolTabLabel, { color: activeTool === 'crop' ? colors.primary : colors.textSecondary }]}>
-              Crop
-            </Text>
+            <RotateCcw size={22} color="#FFFFFF" />
+            <Text style={styles.toolBtnLabel}>Left</Text>
           </TouchableOpacity>
 
+          {/* 4. Crop */}
           <TouchableOpacity
-            style={styles.toolTabBtn}
-            onPress={() => activePage && rotateScannedPage(activePage.id)}
+            style={[styles.toolBtn, isCropMode && styles.toolBtnActive]}
+            onPress={() => {
+              setIsCropMode((c) => !c);
+              if (!isCropMode) {
+                ToastAndroid.show('Crop boundary guides active', ToastAndroid.SHORT);
+              }
+            }}
+            activeOpacity={0.7}
           >
-            <RotateCw size={20} color={colors.textSecondary} />
-            <Text style={[styles.toolTabLabel, { color: colors.textSecondary }]}>Rotate</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.toolTabBtn} onPress={handleExtractText}>
-            <Type size={20} color={colors.primary} />
-            <Text style={[styles.toolTabLabel, { color: colors.primary, fontWeight: '700' }]}>OCR Text</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.toolTabBtn} onPress={() => setSignatureModalVisible(true)}>
-            <PenTool size={20} color={colors.textSecondary} />
-            <Text style={[styles.toolTabLabel, { color: colors.textSecondary }]}>Sign</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.toolTabBtn} onPress={() => setWatermarkModalVisible(true)}>
-            <Stamp size={20} color={colors.textSecondary} />
-            <Text style={[styles.toolTabLabel, { color: colors.textSecondary }]}>Watermark</Text>
+            <CropIcon size={22} color={isCropMode ? '#00C853' : '#FFFFFF'} />
+            <Text style={[styles.toolBtnLabel, isCropMode && { color: '#00C853' }]}>Crop</Text>
           </TouchableOpacity>
         </View>
 
-        {/* E-Signature Modal */}
-        <SignatureModal
-          visible={signatureModalVisible}
-          onClose={() => setSignatureModalVisible(false)}
-          onSave={(data) => {
-            setSignatureSvgPaths(data.paths);
-            setSignatureColor(data.color);
-            ToastAndroid.show('Signature added to document', ToastAndroid.SHORT);
-          }}
-        />
-
-        {/* Watermark Dialog Modal */}
-        <Modal visible={watermarkModalVisible} transparent animationType="fade" onRequestClose={() => setWatermarkModalVisible(false)}>
-          <View style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}>
-            <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.dialogHeader}>
-                <Stamp size={22} color={colors.primary} />
-                <Text style={[typography.h4, { color: colors.text, marginLeft: 8 }]}>Custom Watermark</Text>
+        {/* Rename Document Title Modal */}
+        <Modal
+          visible={isTitleModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsTitleModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.titleModalCard}>
+              <View style={styles.titleModalHeader}>
+                <Edit2 size={20} color="#00C853" />
+                <Text style={styles.titleModalHeading}>Rename Document</Text>
               </View>
-              <Text style={[typography.bodySmall, { color: colors.textMuted, marginVertical: spacing.sm }]}>
-                Add watermark text to protect your scanned document (e.g., CONFIDENTIAL, ORIGINAL):
-              </Text>
+
               <TextInput
-                style={[styles.dialogInput, { backgroundColor: colors.surfaceVariant, color: colors.text, borderColor: colors.border }]}
-                value={watermarkText}
-                onChangeText={setWatermarkText}
-                placeholder="e.g. CONFIDENTIAL / DO NOT COPY"
-                placeholderTextColor={colors.textMuted}
+                style={styles.titleModalInput}
+                value={tempTitle}
+                onChangeText={setTempTitle}
+                placeholder="Enter document title"
+                placeholderTextColor="#777777"
                 autoFocus
+                selectTextOnFocus
               />
-              <View style={styles.dialogBtnRow}>
+
+              <View style={styles.titleModalActions}>
                 <TouchableOpacity
-                  style={[styles.dialogBtn, { borderColor: colors.border, borderWidth: 1 }]}
+                  style={styles.titleModalCancelBtn}
+                  onPress={() => setIsTitleModalVisible(false)}
+                >
+                  <Text style={styles.titleModalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.titleModalSaveBtn}
                   onPress={() => {
-                    setWatermarkText('');
-                    setWatermarkModalVisible(false);
+                    if (tempTitle.trim().length > 0) {
+                      setDocumentTitle(tempTitle.trim());
+                    }
+                    setIsTitleModalVisible(false);
                   }}
                 >
-                  <Text style={[typography.labelMedium, { color: colors.textSecondary }]}>Clear</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.dialogBtn, { backgroundColor: colors.primary }]}
-                  onPress={() => setWatermarkModalVisible(false)}
-                >
-                  <Text style={[typography.labelMedium, { color: '#FFFFFF', fontWeight: 'bold' }]}>Apply</Text>
+                  <Text style={styles.titleModalSaveText}>OK</Text>
                 </TouchableOpacity>
               </View>
             </View>
-          </View>
-        </Modal>
-
-        {/* OCR (Image-to-Text) Modal */}
-        <Modal visible={ocrModalVisible} animationType="slide" onRequestClose={() => setOcrModalVisible(false)}>
-          <View style={[styles.ocrContainer, { backgroundColor: colors.background }]}>
-            <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-              <TouchableOpacity onPress={() => setOcrModalVisible(false)} style={styles.iconBtn}>
-                <X size={22} color={colors.text} />
-              </TouchableOpacity>
-              <Text style={[typography.h4, { color: colors.text, flex: 1, marginLeft: 12 }]}>
-                Extracted Document Text (OCR)
-              </Text>
-              <TouchableOpacity
-                style={styles.copyHeaderBtn}
-                onPress={() => {
-                  Clipboard.setString(ocrText);
-                  ToastAndroid.show('Text copied to clipboard!', ToastAndroid.SHORT);
-                }}
-              >
-                <Copy size={18} color={colors.primary} />
-                <Text style={[typography.labelMedium, { color: colors.primary, marginLeft: 4 }]}>Copy</Text>
-              </TouchableOpacity>
-            </View>
-
-            {isOcrLoading ? (
-              <View style={styles.ocrLoading}>
-                <ActivityIndicator size="large" color={colors.primary} />
-                <Text style={[typography.bodyMedium, { color: colors.textSecondary, marginTop: 12 }]}>
-                  Reading document text offline...
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.ocrBody}>
-                {/* Translation Chips */}
-                <View style={styles.translationRow}>
-                  <Languages size={16} color={colors.textMuted} />
-                  <Text style={[typography.labelSmall, { color: colors.textMuted, marginHorizontal: 6 }]}>Translate:</Text>
-                  {['Hindi', 'English', 'Spanish'].map((lang) => (
-                    <TouchableOpacity
-                      key={lang}
-                      style={[
-                        styles.langChip,
-                        { backgroundColor: translatedLang === lang ? colors.primary : colors.surfaceVariant },
-                      ]}
-                      onPress={() => handleTranslate(lang)}
-                    >
-                      <Text
-                        style={[
-                          typography.labelSmall,
-                          { color: translatedLang === lang ? '#FFFFFF' : colors.text },
-                        ]}
-                      >
-                        {lang}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <TextInput
-                  style={[
-                    styles.ocrTextBox,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor: colors.border,
-                      color: colors.text,
-                    },
-                  ]}
-                  value={ocrText}
-                  onChangeText={setOcrText}
-                  multiline
-                  textAlignVertical="top"
-                />
-
-                <View style={styles.ocrActionFooter}>
-                  <Button
-                    title="Export as TXT File"
-                    variant="outline"
-                    onPress={async () => {
-                      const folder = targetDirectory || '/storage/emulated/0/google drive files';
-                      const path = `${folder}/${documentTitle}.txt`;
-                      await fileService.createFile(folder, `${documentTitle}.txt`, ocrText);
-                      ToastAndroid.show(`Saved to ${documentTitle}.txt`, ToastAndroid.LONG);
-                      setOcrModalVisible(false);
-                    }}
-                  />
-                </View>
-              </View>
-            )}
           </View>
         </Modal>
 
         {/* QR / Barcode Result Modal */}
-        <Modal visible={Boolean(qrResult)} transparent animationType="fade" onRequestClose={() => setQrResult(null)}>
-          <View style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}>
-            <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.dialogHeader}>
-                <QrCode size={24} color="#10B981" />
-                <Text style={[typography.h4, { color: colors.text, marginLeft: 8 }]}>Barcode / QR Detected</Text>
+        <Modal
+          visible={Boolean(qrResult)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setQrResult(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.titleModalCard}>
+              <View style={styles.titleModalHeader}>
+                <QrCode size={22} color="#00C853" />
+                <Text style={styles.titleModalHeading}>Barcode / QR Content</Text>
               </View>
-              <Text style={[typography.bodyMedium, { color: colors.text, marginVertical: spacing.md }]}>
-                {qrResult?.displayValue || qrResult?.rawValue}
-              </Text>
-              <View style={styles.dialogBtnRow}>
+              <Text style={styles.qrResultText}>{qrResult?.displayValue || qrResult?.rawValue}</Text>
+              <View style={styles.titleModalActions}>
                 <TouchableOpacity
-                  style={[styles.dialogBtn, { borderColor: colors.border, borderWidth: 1 }]}
+                  style={styles.titleModalCancelBtn}
                   onPress={() => setQrResult(null)}
                 >
-                  <Text style={[typography.labelMedium, { color: colors.textSecondary }]}>Dismiss</Text>
+                  <Text style={styles.titleModalCancelText}>Dismiss</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.dialogBtn, { backgroundColor: colors.primary }]}
+                  style={styles.titleModalSaveBtn}
                   onPress={() => {
                     Clipboard.setString(qrResult?.displayValue || '');
-                    ToastAndroid.show('QR Content Copied!', ToastAndroid.SHORT);
+                    ToastAndroid.show('Copied to clipboard!', ToastAndroid.SHORT);
                     setQrResult(null);
                   }}
                 >
                   <Copy size={16} color="#FFFFFF" style={{ marginRight: 4 }} />
-                  <Text style={[typography.labelMedium, { color: '#FFFFFF', fontWeight: 'bold' }]}>Copy Text</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
-
-        {/* Save & Export Options Modal */}
-        <Modal visible={saveModalVisible} transparent animationType="fade" onRequestClose={() => setSaveModalVisible(false)}>
-          <View style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}>
-            <View style={[styles.dialogCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.dialogHeader}>
-                <Download size={22} color={colors.primary} />
-                <Text style={[typography.h4, { color: colors.text, marginLeft: 8 }]}>Export Scanned Document</Text>
-              </View>
-
-              {/* Title input */}
-              <Text style={[typography.labelSmall, { color: colors.textMuted, marginTop: spacing.md }]}>File Name</Text>
-              <TextInput
-                style={[styles.dialogInput, { backgroundColor: colors.surfaceVariant, color: colors.text, borderColor: colors.border, marginTop: 4 }]}
-                value={documentTitle}
-                onChangeText={setDocumentTitle}
-              />
-
-              {/* Export Format Selector */}
-              <Text style={[typography.labelSmall, { color: colors.textMuted, marginTop: spacing.md }]}>Format</Text>
-              <View style={styles.formatSelectRow}>
-                {(['pdf', 'images', 'txt'] as const).map((fmt) => (
-                  <TouchableOpacity
-                    key={fmt}
-                    style={[
-                      styles.formatChip,
-                      { borderColor: exportFormat === fmt ? colors.primary : colors.border },
-                      exportFormat === fmt && { backgroundColor: `${colors.primary}15` },
-                    ]}
-                    onPress={() => setExportFormat(fmt)}
-                  >
-                    <Text
-                      style={[
-                        typography.labelMedium,
-                        { color: exportFormat === fmt ? colors.primary : colors.text, fontWeight: exportFormat === fmt ? '700' : '500' },
-                      ]}
-                    >
-                      {fmt.toUpperCase()}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              {/* Page Size Selector */}
-              {exportFormat === 'pdf' && (
-                <>
-                  <Text style={[typography.labelSmall, { color: colors.textMuted, marginTop: spacing.md }]}>Page Size</Text>
-                  <View style={styles.formatSelectRow}>
-                    {(['A4', 'LETTER', 'LEGAL', 'IDCARD'] as PageSize[]).map((sz) => (
-                      <TouchableOpacity
-                        key={sz}
-                        style={[
-                          styles.formatChip,
-                          { borderColor: selectedPageSize === sz ? colors.primary : colors.border },
-                          selectedPageSize === sz && { backgroundColor: `${colors.primary}15` },
-                        ]}
-                        onPress={() => setSelectedPageSize(sz)}
-                      >
-                        <Text
-                          style={[
-                            typography.labelSmall,
-                            { color: selectedPageSize === sz ? colors.primary : colors.text, fontWeight: selectedPageSize === sz ? '700' : '500' },
-                          ]}
-                        >
-                          {sz}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </>
-              )}
-
-              {/* Compression Quality Selector */}
-              <Text style={[typography.labelSmall, { color: colors.textMuted, marginTop: spacing.md }]}>File Size / Compression</Text>
-              <View style={styles.formatSelectRow}>
-                {[
-                  { id: 'high', label: 'High (300 DPI)' },
-                  { id: 'medium', label: 'Medium (~500KB)' },
-                  { id: 'low', label: 'Small (~200KB)' },
-                ].map((q) => (
-                  <TouchableOpacity
-                    key={q.id}
-                    style={[
-                      styles.formatChip,
-                      { borderColor: selectedQuality === q.id ? colors.primary : colors.border },
-                      selectedQuality === q.id && { backgroundColor: `${colors.primary}15` },
-                    ]}
-                    onPress={() => setSelectedQuality(q.id as any)}
-                  >
-                    <Text
-                      style={[
-                        typography.labelSmall,
-                        { color: selectedQuality === q.id ? colors.primary : colors.text, fontWeight: selectedQuality === q.id ? '700' : '500' },
-                      ]}
-                    >
-                      {q.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <View style={[styles.dialogBtnRow, { marginTop: spacing.xl }]}>
-                <TouchableOpacity
-                  style={[styles.dialogBtn, { borderColor: colors.border, borderWidth: 1 }]}
-                  onPress={() => setSaveModalVisible(false)}
-                >
-                  <Text style={[typography.labelMedium, { color: colors.textSecondary }]}>Cancel</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.dialogBtn, { backgroundColor: colors.primary }]}
-                  onPress={handleFinalSave}
-                >
-                  <Check size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                  <Text style={[typography.labelMedium, { color: '#FFFFFF', fontWeight: 'bold' }]}>Save Document</Text>
+                  <Text style={styles.titleModalSaveText}>Copy</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1100,411 +653,374 @@ export const PdfScannerModal: React.FC<PdfScannerModalProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#0D0E11',
   },
   header: {
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: spacing.base,
-    paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    backgroundColor: '#0D0E11',
   },
-  iconBtn: {
-    padding: spacing.xs,
+  backBtn: {
+    padding: 6,
   },
-  titleGroup: {
+  titleContainer: {
     flex: 1,
-    marginHorizontal: spacing.sm,
+    marginHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  titleInput: {
-    padding: 0,
-    fontSize: 16,
+  titleText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  dottedLine: {
+    width: '100%',
+    height: 1,
+    marginTop: 4,
+    borderBottomWidth: 1,
+    borderStyle: 'dotted',
+    borderColor: 'rgba(255, 255, 255, 0.65)',
+  },
+  doneBtn: {
+    backgroundColor: '#00C853', // OKEN Green
+    paddingHorizontal: 18,
+    paddingVertical: 7,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  doneBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '700',
   },
-  gridBtn: {
-    padding: spacing.sm,
-    marginRight: spacing.xs,
-  },
-  modesBar: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 6,
-  },
-  modesScroll: {
-    paddingHorizontal: spacing.base,
-    gap: spacing.sm,
-  },
-  modeChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: borderRadius.full,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  previewArea: {
+  canvasArea: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: spacing.sm,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
   },
-  pageCanvas: {
+  imageWrapper: {
     width: '100%',
     height: '100%',
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    overflow: 'hidden',
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  pageRealImage: {
+  previewImage: {
     width: '100%',
     height: '100%',
   },
-  gridOverlay: {
+  floatingDeleteBtn: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 10,
-  },
-  gridLineH1: {
-    position: 'absolute',
-    top: '33.3%',
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-  },
-  gridLineH2: {
-    position: 'absolute',
-    top: '66.6%',
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-  },
-  gridLineV1: {
-    position: 'absolute',
-    left: '33.3%',
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-  },
-  gridLineV2: {
-    position: 'absolute',
-    left: '66.6%',
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-  },
-  watermarkOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    top: 14,
+    left: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(25, 27, 31, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 12,
-    transform: [{ rotate: '-35deg' }],
+    zIndex: 10,
   },
-  watermarkPreviewText: {
-    fontSize: 38,
-    fontWeight: '900',
-    color: 'rgba(239, 68, 68, 0.22)',
-    letterSpacing: 4,
-    textAlign: 'center',
-  },
-  signatureOverlayPreview: {
+  cropOverlay: {
     position: 'absolute',
-    bottom: 25,
-    right: 25,
-    zIndex: 14,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    borderRadius: 8,
-    padding: 4,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    margin: 16,
   },
-  pageTopBadges: {
+  cropGuideBorder: {
     position: 'absolute',
-    top: 12,
-    left: 12,
-    right: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    zIndex: 15,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderWidth: 1.5,
+    borderColor: '#00C853',
+    borderStyle: 'dashed',
   },
-  badgePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: borderRadius.full,
-  },
-  cropCornerBox: {
+  cropCorner: {
     position: 'absolute',
-    width: 24,
-    height: 24,
-    borderColor: '#3B82F6',
-    zIndex: 20,
+    width: 22,
+    height: 22,
+    borderColor: '#00C853',
   },
   cornerTL: {
-    top: '5%',
-    left: '5%',
+    top: -2,
+    left: -2,
     borderTopWidth: 4,
     borderLeftWidth: 4,
   },
   cornerTR: {
-    top: '5%',
-    right: '5%',
+    top: -2,
+    right: -2,
     borderTopWidth: 4,
     borderRightWidth: 4,
   },
   cornerBL: {
-    bottom: '5%',
-    left: '5%',
+    bottom: -2,
+    left: -2,
     borderBottomWidth: 4,
     borderLeftWidth: 4,
   },
   cornerBR: {
-    bottom: '5%',
-    right: '5%',
+    bottom: -2,
+    right: -2,
     borderBottomWidth: 4,
     borderRightWidth: 4,
   },
-  emptyPrompt: {
+  emptyContainer: {
     alignItems: 'center',
-    padding: spacing.xl,
-    maxWidth: 360,
-  },
-  emptyIconCircle: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
     justifyContent: 'center',
+  },
+  emptyTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: 14,
+  },
+  emptySubtitle: {
+    color: '#8E8E93',
+    fontSize: 13,
+    marginTop: 6,
+    textAlign: 'center',
+  },
+  openCameraBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: '#00C853',
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 24,
+    marginTop: 20,
   },
-  emptyActionButtons: {
-    width: '100%',
-    marginTop: spacing.xl,
+  openCameraBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
-  bigActionBtn: {
-    width: '100%',
-    height: 50,
-    borderRadius: borderRadius.md,
+  paginationRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 6,
   },
-  thumbnailsStrip: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 8,
+  pageNavBtn: {
+    padding: 6,
   },
-  thumbsScroll: {
-    paddingHorizontal: spacing.base,
-    gap: spacing.sm,
+  pageNavDisabled: {
+    opacity: 0.3,
+  },
+  paginationText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginHorizontal: 18,
+    letterSpacing: 0.5,
+  },
+  applyAllContainer: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+  },
+  applyAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  applyAllLabel: {
+    color: '#E0E0E0',
+    fontSize: 13,
+    marginRight: 8,
+  },
+  radioCircle: {
+    width: 17,
+    height: 17,
+    borderRadius: 8.5,
+    borderWidth: 1.5,
+    borderColor: '#777777',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioCircleActive: {
+    borderColor: '#00C853',
+  },
+  radioDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: '#00C853',
+  },
+  filtersSection: {
+    height: 104,
+    backgroundColor: '#0D0E11',
+    justifyContent: 'center',
+  },
+  filtersScrollContent: {
+    paddingHorizontal: 14,
     alignItems: 'center',
   },
-  thumbItem: {
-    width: 52,
-    height: 72,
-    borderRadius: borderRadius.sm,
-    borderWidth: 2,
+  filterCardItem: {
+    alignItems: 'center',
+    marginHorizontal: 6,
+    width: 66,
+  },
+  filterThumbnailBox: {
+    width: 64,
+    height: 64,
+    borderRadius: 4,
+    backgroundColor: '#1E2024',
     overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
     position: 'relative',
   },
-  thumbImage: {
+  filterThumbnailSelected: {
+    borderColor: '#00C853', // OKEN Green border
+    borderWidth: 2,
+  },
+  filterThumbnailImage: {
     width: '100%',
     height: '100%',
   },
-  thumbOverlay: {
+  filterGrayStyle: {
+    opacity: 0.75,
+  },
+  filterBwStyle: {
+    opacity: 0.9,
+  },
+  filterLightenStyle: {
+    opacity: 0.85,
+  },
+  betaBadge: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    top: 2,
+    left: 2,
+    backgroundColor: '#FF3B30',
     paddingHorizontal: 4,
-    paddingVertical: 2,
+    paddingVertical: 1,
+    borderRadius: 3,
   },
-  thumbDelete: {
-    padding: 2,
+  betaBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '700',
   },
-  addPageThumb: {
-    width: 52,
-    height: 72,
-    borderRadius: borderRadius.sm,
-    borderWidth: 1.5,
-    borderStyle: 'dashed',
-    justifyContent: 'center',
-    alignItems: 'center',
+  filterLabelText: {
+    color: '#CCCCCC',
+    fontSize: 11,
+    marginTop: 6,
+    textAlign: 'center',
   },
-  combineThumb: {
-    width: 60,
-    height: 72,
-    borderRadius: borderRadius.sm,
-    backgroundColor: '#3B82F6',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 4,
-  },
-  toolContentArea: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 8,
-  },
-  filtersScroll: {
-    paddingHorizontal: spacing.base,
-    gap: spacing.sm,
-  },
-  filterButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    minWidth: 72,
-  },
-  adjustPanel: {
-    paddingHorizontal: spacing.base,
-    paddingVertical: 4,
-  },
-  adjustRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  adjustStepBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  adjustStepText: {
-    fontSize: 20,
-    color: '#3B82F6',
-    fontWeight: 'bold',
-  },
-  cropActionsRow: {
-    flexDirection: 'row',
-    paddingHorizontal: spacing.base,
-    gap: spacing.md,
-  },
-  cropToolBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: borderRadius.md,
+  filterLabelTextSelected: {
+    color: '#00C853',
+    fontWeight: '700',
   },
   bottomToolbar: {
+    height: 68,
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-around',
-    alignItems: 'center',
-    paddingVertical: 8,
+    backgroundColor: '#08080A',
     borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#1A1C20',
+    paddingBottom: 4,
   },
-  toolTabBtn: {
+  toolBtn: {
     alignItems: 'center',
-    paddingHorizontal: 6,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
   },
-  toolTabActive: {
+  toolBtnActive: {
     opacity: 1,
   },
-  toolTabLabel: {
+  toolBtnLabel: {
+    color: '#FFFFFF',
     fontSize: 11,
-    marginTop: 3,
+    marginTop: 4,
+    fontWeight: '500',
   },
-  modalBackdrop: {
+  modalOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: spacing.base,
+    paddingHorizontal: 24,
   },
-  dialogCard: {
+  titleModalCard: {
     width: '100%',
-    borderRadius: borderRadius.lg,
+    backgroundColor: '#1C1E24',
+    borderRadius: 14,
+    padding: 20,
     borderWidth: 1,
-    padding: spacing.base,
+    borderColor: '#2A2D34',
   },
-  dialogHeader: {
+  titleModalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 16,
   },
-  dialogInput: {
-    height: 44,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    paddingHorizontal: spacing.md,
-    fontSize: 14,
+  titleModalHeading: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+    marginLeft: 10,
   },
-  dialogBtnRow: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginTop: spacing.lg,
-  },
-  dialogBtn: {
-    flex: 1,
-    height: 44,
-    borderRadius: borderRadius.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  formatSelectRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: 6,
-    flexWrap: 'wrap',
-  },
-  formatChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-  },
-  ocrContainer: {
-    flex: 1,
-  },
-  copyHeaderBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-  },
-  ocrLoading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  ocrBody: {
-    flex: 1,
-    padding: spacing.base,
-  },
-  translationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
-  },
-  langChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: borderRadius.full,
-    marginRight: 6,
-  },
-  ocrTextBox: {
-    flex: 1,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    padding: spacing.md,
+  titleModalInput: {
+    backgroundColor: '#121418',
+    color: '#FFFFFF',
     fontSize: 15,
-    lineHeight: 22,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: '#333742',
   },
-  ocrActionFooter: {
-    marginTop: spacing.md,
+  titleModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 20,
+  },
+  titleModalCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    marginRight: 8,
+  },
+  titleModalCancelText: {
+    color: '#A0A0A0',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  titleModalSaveBtn: {
+    backgroundColor: '#00C853',
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  titleModalSaveText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  qrResultText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    marginVertical: 12,
+    lineHeight: 22,
   },
 });

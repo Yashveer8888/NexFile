@@ -1,43 +1,50 @@
 package com.nexfile.modules
 
+import android.media.MediaScannerConnection
 import com.facebook.react.bridge.*
 import java.io.*
+import java.util.concurrent.Executors
 import java.util.zip.*
 
 class NexArchiveModule(private val reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
+    private val ioExecutor = Executors.newFixedThreadPool(2)
+    private val BUFFER_SIZE = 65536 // 64KB for high-throughput I/O
+
     override fun getName(): String = "NexArchive"
 
     @ReactMethod
     fun listArchiveContents(archivePath: String, promise: Promise) {
-        try {
-            val file = File(archivePath)
-            if (!file.exists()) {
-                promise.reject("FILE_NOT_FOUND", "Archive file does not exist: $archivePath")
-                return
-            }
-
-            val array = Arguments.createArray()
-            ZipFile(file).use { zip ->
-                val entries = zip.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    val map = Arguments.createMap().apply {
-                        putString("name", entry.name)
-                        putBoolean("isDirectory", entry.isDirectory)
-                        putDouble("size", entry.size.toDouble())
-                        putDouble("compressedSize", entry.compressedSize.toDouble())
-                        putDouble("time", entry.time.toDouble())
-                        putDouble("crc", entry.crc.toDouble())
-                    }
-                    array.pushMap(map)
+        ioExecutor.execute {
+            try {
+                val file = File(archivePath)
+                if (!file.exists()) {
+                    promise.reject("FILE_NOT_FOUND", "Archive file does not exist: $archivePath")
+                    return@execute
                 }
-            }
 
-            promise.resolve(array)
-        } catch (e: Exception) {
-            promise.reject("LIST_ARCHIVE_ERROR", e.message, e)
+                val array = Arguments.createArray()
+                ZipFile(file).use { zip ->
+                    val entries = zip.entries()
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        val map = Arguments.createMap().apply {
+                            putString("name", entry.name)
+                            putBoolean("isDirectory", entry.isDirectory)
+                            putDouble("size", entry.size.toDouble())
+                            putDouble("compressedSize", entry.compressedSize.toDouble())
+                            putDouble("time", entry.time.toDouble())
+                            putDouble("crc", entry.crc.toDouble())
+                        }
+                        array.pushMap(map)
+                    }
+                }
+
+                promise.resolve(array)
+            } catch (e: Exception) {
+                promise.reject("LIST_ARCHIVE_ERROR", e.message, e)
+            }
         }
     }
 
@@ -48,31 +55,42 @@ class NexArchiveModule(private val reactContext: ReactApplicationContext) :
         compressionLevel: Int, // 0 = none, 1 = fastest, 9 = best
         promise: Promise
     ) {
-        try {
-            val destFile = File(destZipPath)
-            destFile.parentFile?.mkdirs()
+        ioExecutor.execute {
+            try {
+                val destFile = File(destZipPath)
+                destFile.parentFile?.mkdirs()
 
-            val level = compressionLevel.coerceIn(0, 9)
+                val level = compressionLevel.coerceIn(0, 9)
 
-            FileOutputStream(destFile).use { fos ->
-                BufferedOutputStream(fos).use { bos ->
-                    ZipOutputStream(bos).use { zos ->
-                        zos.setLevel(level)
+                FileOutputStream(destFile).use { fos ->
+                    BufferedOutputStream(fos, BUFFER_SIZE).use { bos ->
+                        ZipOutputStream(bos).use { zos ->
+                            zos.setLevel(level)
 
-                        for (i in 0 until sourcePaths.size()) {
-                            val path = sourcePaths.getString(i) ?: continue
-                            val srcFile = File(path)
-                            if (!srcFile.exists()) continue
+                            for (i in 0 until sourcePaths.size()) {
+                                val path = sourcePaths.getString(i) ?: continue
+                                val srcFile = File(path)
+                                if (!srcFile.exists()) continue
 
-                            addToZip(srcFile, "", zos)
+                                addToZip(srcFile, "", zos)
+                            }
                         }
                     }
                 }
-            }
 
-            promise.resolve(destFile.absolutePath)
-        } catch (e: Exception) {
-            promise.reject("CREATE_ARCHIVE_ERROR", e.message, e)
+                try {
+                    MediaScannerConnection.scanFile(
+                        reactContext,
+                        arrayOf(destFile.absolutePath),
+                        null,
+                        null
+                    )
+                } catch (_: Exception) {}
+
+                promise.resolve(destFile.absolutePath)
+            } catch (e: Exception) {
+                promise.reject("CREATE_ARCHIVE_ERROR", e.message, e)
+            }
         }
     }
 
@@ -93,10 +111,10 @@ class NexArchiveModule(private val reactContext: ReactApplicationContext) :
             entry.time = file.lastModified()
             zos.putNextEntry(entry)
 
-            FileInputStream(file).use { fis ->
-                val buffer = ByteArray(8192)
+            BufferedInputStream(FileInputStream(file), BUFFER_SIZE).use { bis ->
+                val buffer = ByteArray(BUFFER_SIZE)
                 var read: Int
-                while (fis.read(buffer).also { read = it } != -1) {
+                while (bis.read(buffer).also { read = it } != -1) {
                     zos.write(buffer, 0, read)
                 }
             }
@@ -111,64 +129,78 @@ class NexArchiveModule(private val reactContext: ReactApplicationContext) :
         selectedEntries: ReadableArray?,
         promise: Promise
     ) {
-        try {
-            val archiveFile = File(archivePath)
-            if (!archiveFile.exists()) {
-                promise.reject("FILE_NOT_FOUND", "Archive file does not exist")
-                return
-            }
-
-            val destDir = File(destDirPath)
-            if (!destDir.exists()) destDir.mkdirs()
-
-            val filterSet = HashSet<String>()
-            if (selectedEntries != null && selectedEntries.size() > 0) {
-                for (i in 0 until selectedEntries.size()) {
-                    selectedEntries.getString(i)?.let { filterSet.add(it) }
+        ioExecutor.execute {
+            try {
+                val archiveFile = File(archivePath)
+                if (!archiveFile.exists()) {
+                    promise.reject("FILE_NOT_FOUND", "Archive file does not exist")
+                    return@execute
                 }
-            }
 
-            val extractedPaths = Arguments.createArray()
+                val destDir = File(destDirPath)
+                if (!destDir.exists()) destDir.mkdirs()
 
-            ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
-                var entry: ZipEntry? = zis.nextEntry
-                val buffer = ByteArray(8192)
-
-                while (entry != null) {
-                    val entryName = entry.name
-
-                    // Check if entry or its parent is in filter list
-                    if (filterSet.isEmpty() || filterSet.contains(entryName)) {
-                        val outFile = File(destDir, entryName)
-
-                        // Path traversal guard
-                        if (!outFile.canonicalPath.startsWith(destDir.canonicalPath)) {
-                            throw SecurityException("Zip entry is trying to escape target dir: $entryName")
-                        }
-
-                        if (entry.isDirectory) {
-                            outFile.mkdirs()
-                        } else {
-                            outFile.parentFile?.mkdirs()
-                            FileOutputStream(outFile).use { fos ->
-                                var count: Int
-                                while (zis.read(buffer).also { count = it } != -1) {
-                                    fos.write(buffer, 0, count)
-                                }
-                            }
-                            extractedPaths.pushString(outFile.absolutePath)
-                        }
+                val filterSet = HashSet<String>()
+                if (selectedEntries != null && selectedEntries.size() > 0) {
+                    for (i in 0 until selectedEntries.size()) {
+                        selectedEntries.getString(i)?.let { filterSet.add(it) }
                     }
-
-                    zis.closeEntry()
-                    entry = zis.nextEntry
                 }
-            }
 
-            promise.resolve(extractedPaths)
-        } catch (e: Exception) {
-            promise.reject("EXTRACT_ARCHIVE_ERROR", e.message, e)
+                val extractedPaths = Arguments.createArray()
+                val scannedPaths = ArrayList<String>()
+
+                ZipInputStream(BufferedInputStream(FileInputStream(archiveFile), BUFFER_SIZE)).use { zis ->
+                    var entry: ZipEntry? = zis.nextEntry
+                    val buffer = ByteArray(BUFFER_SIZE)
+
+                    while (entry != null) {
+                        val entryName = entry.name
+
+                        // Check if entry or its parent is in filter list
+                        if (filterSet.isEmpty() || filterSet.contains(entryName)) {
+                            val outFile = File(destDir, entryName)
+
+                            // Path traversal guard
+                            if (!outFile.canonicalPath.startsWith(destDir.canonicalPath)) {
+                                throw SecurityException("Zip entry is trying to escape target dir: $entryName")
+                            }
+
+                            if (entry.isDirectory) {
+                                outFile.mkdirs()
+                            } else {
+                                outFile.parentFile?.mkdirs()
+                                BufferedOutputStream(FileOutputStream(outFile), BUFFER_SIZE).use { bos ->
+                                    var count: Int
+                                    while (zis.read(buffer).also { count = it } != -1) {
+                                        bos.write(buffer, 0, count)
+                                    }
+                                }
+                                extractedPaths.pushString(outFile.absolutePath)
+                                scannedPaths.add(outFile.absolutePath)
+                            }
+                        }
+
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+
+                if (scannedPaths.isNotEmpty()) {
+                    try {
+                        MediaScannerConnection.scanFile(
+                            reactContext,
+                            scannedPaths.toTypedArray(),
+                            null,
+                            null
+                        )
+                    } catch (_: Exception) {}
+                }
+
+                promise.resolve(extractedPaths)
+            } catch (e: Exception) {
+                promise.reject("EXTRACT_ARCHIVE_ERROR", e.message, e)
+            }
         }
     }
 }
-

@@ -325,6 +325,21 @@ class NexPdfModule(private val reactContext: ReactApplicationContext) :
                 paint.colorFilter = ColorMatrixColorFilter(cm)
                 canvas.drawBitmap(src, 0f, 0f, paint)
             }
+            "no_shadow" -> {
+                // Specialized shadow removal - increases exposure & cleans dark gradient patches
+                val c = 1.18f + (contrast / 100f)
+                val b = 50f + brightness
+                val t = -128f * (c - 1f) + b
+                val noShadowMatrix = ColorMatrix(floatArrayOf(
+                    c, 0f, 0f, 0f, t,
+                    0f, c, 0f, 0f, t,
+                    0f, 0f, c, 0f, t,
+                    0f, 0f, 0f, 1f, 0f
+                ))
+                cm.set(noShadowMatrix)
+                paint.colorFilter = ColorMatrixColorFilter(cm)
+                canvas.drawBitmap(src, 0f, 0f, paint)
+            }
             "lighten", "shadow_removal" -> {
                 // Brightens dark shadows while retaining text clarity
                 val c = 1.15f + (contrast / 100f)

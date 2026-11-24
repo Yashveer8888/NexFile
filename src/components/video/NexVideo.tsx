@@ -19,6 +19,10 @@ export interface NexVideoErrorEvent {
   error: string;
 }
 
+export interface NexVideoSubtitleCueEvent {
+  text: string;
+}
+
 export interface NexVideoProps extends ViewProps {
   videoPath?: string;
   paused?: boolean;
@@ -28,10 +32,12 @@ export interface NexVideoProps extends ViewProps {
   isLooping?: boolean;
   resizeMode?: 'contain' | 'cover' | 'stretch' | 'zoom';
   selectedAudioTrack?: number;
+  selectedSubtitleTrack?: number;
   onVideoProgress?: (event: { nativeEvent: NexVideoProgressEvent }) => void;
   onVideoLoad?: (event: { nativeEvent: NexVideoLoadEvent }) => void;
   onVideoEnd?: () => void;
   onVideoError?: (event: { nativeEvent: NexVideoErrorEvent }) => void;
+  onSubtitleCue?: (event: { nativeEvent: NexVideoSubtitleCueEvent }) => void;
 }
 
 const NativeNexVideo = requireNativeComponent<NexVideoProps>('NexVideoView');

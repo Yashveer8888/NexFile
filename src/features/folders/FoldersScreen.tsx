@@ -647,8 +647,9 @@ export const FoldersScreen: React.FC<{ navigation: any }> = ({ navigation }) => 
         itemCount={1}
         onCompress={async (zipName) => {
           if (compressTargetItem) {
-            await compressSelected(zipName, currentPath);
+            const targetPath = compressTargetItem.path;
             setCompressTargetItem(null);
+            await compressSelected(zipName, currentPath, [targetPath]);
           }
         }}
         onCancel={() => setCompressTargetItem(null)}

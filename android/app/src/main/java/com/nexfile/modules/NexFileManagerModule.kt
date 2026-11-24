@@ -1152,6 +1152,14 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
 
                 val target = File(destDir, source.name)
                 copyRecursive(source, target)
+                try {
+                    MediaScannerConnection.scanFile(
+                        reactContext,
+                        arrayOf(target.absolutePath),
+                        null,
+                        null
+                    )
+                } catch (_: Exception) {}
                 promise.resolve(target.absolutePath)
             } catch (e: Exception) {
                 promise.reject("COPY_ERROR", e.message, e)
@@ -1167,11 +1175,18 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                 copyRecursive(f, File(target, f.name))
             }
         } else {
-            FileInputStream(source).use { inStream ->
-                FileOutputStream(target).use { outStream ->
-                    inStream.copyTo(outStream)
+            FileInputStream(source).channel.use { inChannel ->
+                FileOutputStream(target).channel.use { outChannel ->
+                    val size = inChannel.size()
+                    var transferred = 0L
+                    while (transferred < size) {
+                        val count = inChannel.transferTo(transferred, size - transferred, outChannel)
+                        if (count <= 0) break
+                        transferred += count
+                    }
                 }
             }
+            target.setLastModified(source.lastModified())
         }
     }
 
@@ -1190,11 +1205,27 @@ class NexFileManagerModule(private val reactContext: ReactApplicationContext) :
                 val target = File(destDir, source.name)
                 val moved = source.renameTo(target)
                 if (moved) {
+                    try {
+                        MediaScannerConnection.scanFile(
+                            reactContext,
+                            arrayOf(source.absolutePath, target.absolutePath),
+                            null,
+                            null
+                        )
+                    } catch (_: Exception) {}
                     promise.resolve(target.absolutePath)
                 } else {
-                    // Fallback copy + delete
+                    // Fallback copy + delete for cross-volume / partition moves
                     copyRecursive(source, target)
                     deleteRecursive(source)
+                    try {
+                        MediaScannerConnection.scanFile(
+                            reactContext,
+                            arrayOf(source.absolutePath, target.absolutePath),
+                            null,
+                            null
+                        )
+                    } catch (_: Exception) {}
                     promise.resolve(target.absolutePath)
                 }
             } catch (e: Exception) {

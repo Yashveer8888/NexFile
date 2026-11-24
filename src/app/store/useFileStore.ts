@@ -6,6 +6,7 @@ import {
   SortOrder,
   StorageVolume,
   BreadcrumbItem,
+  FileOperationProgress,
 } from '../../types/file';
 import { fileService } from '../../services/filesystem/fileService';
 import { archiveService } from '../../services/archive/archiveService';
@@ -27,6 +28,8 @@ interface FileState {
   clipboard: { mode: 'copy' | 'move'; items: FileItem[] } | null;
   isLoading: boolean;
   searchQuery: string;
+  operationProgress: FileOperationProgress | null;
+  setOperationProgress: (progress: FileOperationProgress | null) => void;
 
   // Actions
   initialize: () => Promise<void>;
@@ -52,7 +55,7 @@ interface FileState {
   deleteSelectedWithChoice: (permanent: boolean) => Promise<void>;
   deleteSingle: (path: string) => Promise<void>;
   deleteSingleWithChoice: (path: string, permanent: boolean) => Promise<void>;
-  compressSelected: (zipName: string, destDirPath?: string) => Promise<string>;
+  compressSelected: (zipName: string, destDirPath?: string, specificPaths?: string[]) => Promise<string>;
   extractArchive: (archivePath: string, destDirPath?: string) => Promise<string[]>;
   hideItem: (path: string) => Promise<string>;
   unhideItem: (path: string) => Promise<string>;
@@ -79,6 +82,8 @@ export const useFileStore = create<FileState>((set, get) => ({
   clipboard: null,
   isLoading: false,
   searchQuery: '',
+  operationProgress: null,
+  setOperationProgress: (progress) => set({ operationProgress: progress }),
 
   initialize: async () => {
     set({ isLoading: true });
@@ -286,22 +291,68 @@ export const useFileStore = create<FileState>((set, get) => ({
     const { clipboard, currentPath } = get();
     if (!clipboard || clipboard.items.length === 0) return;
     const dest = targetDirPath || currentPath;
+    const isCopy = clipboard.mode === 'copy';
+    const total = clipboard.items.length;
 
     set({ isLoading: true });
     try {
-      for (const item of clipboard.items) {
-        if (clipboard.mode === 'copy') {
+      for (let i = 0; i < total; i++) {
+        const item = clipboard.items[i];
+        const percent = Math.round(((i + 0.3) / total) * 100);
+        set({
+          operationProgress: {
+            type: isCopy ? 'copy' : 'move',
+            title: isCopy ? 'Copying files...' : 'Moving files...',
+            currentItem: item.name,
+            totalItems: total,
+            completedItems: i,
+            percent,
+            isIndeterminate: false,
+            isCancelled: false,
+          },
+        });
+
+        if (isCopy) {
           await fileService.copy(item.path, dest);
         } else {
           await fileService.move(item.path, dest);
         }
+
+        set({
+          operationProgress: {
+            type: isCopy ? 'copy' : 'move',
+            title: isCopy ? 'Copying files...' : 'Moving files...',
+            currentItem: item.name,
+            totalItems: total,
+            completedItems: i + 1,
+            percent: Math.round(((i + 1) / total) * 100),
+            isIndeterminate: false,
+            isCancelled: false,
+          },
+        });
       }
-      set({ clipboard: null });
+
+      set({
+        operationProgress: {
+          type: isCopy ? 'copy' : 'move',
+          title: isCopy ? 'Copied successfully!' : 'Moved successfully!',
+          currentItem: `${total} items finished`,
+          totalItems: total,
+          completedItems: total,
+          percent: 100,
+          isIndeterminate: false,
+          isCancelled: false,
+          isCompleted: true,
+        },
+        clipboard: null,
+      });
+
+      await new Promise<void>((resolve) => setTimeout(() => resolve(), 600));
       await get().refresh();
     } catch (err) {
       console.warn('Error pasting items:', err);
     } finally {
-      set({ isLoading: false });
+      set({ isLoading: false, operationProgress: null });
     }
   },
 
@@ -407,6 +458,22 @@ export const useFileStore = create<FileState>((set, get) => ({
       .map((id) => allFiles.find((f) => f.id === id || f.path === id)?.path)
       .filter((p): p is string => Boolean(p));
 
+    const total = pathsToDelete.length;
+    if (total > 3) {
+      set({
+        operationProgress: {
+          type: 'delete',
+          title: permanent ? 'Deleting permanently...' : 'Moving to Trash...',
+          currentItem: `${total} items`,
+          totalItems: total,
+          completedItems: 1,
+          percent: 30,
+          isIndeterminate: false,
+          isCancelled: false,
+        },
+      });
+    }
+
     const nextFiles = files.filter((f) => !ids.has(f.id) && !ids.has(f.path));
     const nextRecent = recentFiles.filter((f) => !ids.has(f.id) && !ids.has(f.path));
     const nextCategory = categoryFiles.filter((f) => !ids.has(f.id) && !ids.has(f.path));
@@ -421,9 +488,29 @@ export const useFileStore = create<FileState>((set, get) => ({
 
     fileService.setCachedDirectory(currentPath, showHidden, nextFiles);
     pathsToDelete.forEach((p) => fileService.removeCachedItem(p));
-    Promise.all(pathsToDelete.map((p) => fileService.delete(p, !permanent))).catch((err) => {
+    try {
+      await Promise.all(pathsToDelete.map((p) => fileService.delete(p, !permanent)));
+    } catch (err) {
       console.warn('Error deleting selected items:', err);
-    });
+    } finally {
+      if (total > 3) {
+        set({
+          operationProgress: {
+            type: 'delete',
+            title: 'Deleted successfully',
+            currentItem: `${total} items`,
+            totalItems: total,
+            completedItems: total,
+            percent: 100,
+            isIndeterminate: false,
+            isCancelled: false,
+            isCompleted: true,
+          },
+        });
+        await new Promise<void>((resolve) => setTimeout(() => resolve(), 500));
+        set({ operationProgress: null });
+      }
+    }
   },
 
   deleteSingle: async (path: string) => {
@@ -451,28 +538,96 @@ export const useFileStore = create<FileState>((set, get) => ({
     });
   },
 
-  compressSelected: async (zipName: string, destDirPath?: string) => {
+  compressSelected: async (zipName: string, destDirPath?: string, specificPaths?: string[]) => {
     const { selectedFileIds, files, recentFiles, currentPath } = get();
     const allFiles = [...files, ...recentFiles];
-    const sourcePaths = Array.from(selectedFileIds)
-      .map((id) => allFiles.find((f) => f.id === id)?.path)
-      .filter((p): p is string => Boolean(p));
+    const sourcePaths =
+      specificPaths && specificPaths.length > 0
+        ? specificPaths
+        : Array.from(selectedFileIds)
+            .map((id) => allFiles.find((f) => f.id === id)?.path)
+            .filter((p): p is string => Boolean(p));
 
     if (sourcePaths.length === 0) return '';
     const cleanZipName = zipName.toLowerCase().endsWith('.zip') ? zipName : `${zipName}.zip`;
     const targetDir = destDirPath || currentPath;
     const destZipPath = `${targetDir}/${cleanZipName}`;
-    const result = await archiveService.createArchive(sourcePaths, destZipPath);
-    await get().refresh();
-    set({ selectedFileIds: new Set() });
-    return result;
+
+    set({
+      operationProgress: {
+        type: 'compress',
+        title: 'Compressing archive...',
+        currentItem: cleanZipName,
+        totalItems: sourcePaths.length,
+        completedItems: 0,
+        percent: 30,
+        isIndeterminate: false,
+        isCancelled: false,
+      },
+    });
+
+    try {
+      const result = await archiveService.createArchive(sourcePaths, destZipPath);
+      set({
+        operationProgress: {
+          type: 'compress',
+          title: 'Archive created!',
+          currentItem: cleanZipName,
+          totalItems: sourcePaths.length,
+          completedItems: sourcePaths.length,
+          percent: 100,
+          isIndeterminate: false,
+          isCancelled: false,
+          isCompleted: true,
+        },
+      });
+      await new Promise<void>((resolve) => setTimeout(() => resolve(), 600));
+      await get().refresh();
+      set({ selectedFileIds: new Set() });
+      return result;
+    } finally {
+      set({ operationProgress: null });
+    }
   },
 
   extractArchive: async (archivePath: string, destDirPath?: string) => {
     const dest = destDirPath || archivePath.substring(0, archivePath.lastIndexOf('/'));
-    const result = await archiveService.extractArchive(archivePath, dest);
-    await get().refresh();
-    return result;
+    const zipName = archivePath.split('/').pop() || 'Archive';
+
+    set({
+      operationProgress: {
+        type: 'extract',
+        title: 'Extracting archive...',
+        currentItem: zipName,
+        totalItems: 1,
+        completedItems: 0,
+        percent: 30,
+        isIndeterminate: false,
+        isCancelled: false,
+      },
+    });
+
+    try {
+      const result = await archiveService.extractArchive(archivePath, dest);
+      set({
+        operationProgress: {
+          type: 'extract',
+          title: 'Extraction complete!',
+          currentItem: zipName,
+          totalItems: 1,
+          completedItems: 1,
+          percent: 100,
+          isIndeterminate: false,
+          isCancelled: false,
+          isCompleted: true,
+        },
+      });
+      await new Promise<void>((resolve) => setTimeout(() => resolve(), 600));
+      await get().refresh();
+      return result;
+    } finally {
+      set({ operationProgress: null });
+    }
   },
 
   hideItem: async (path: string) => {

@@ -1,5 +1,6 @@
 export type DocumentFilterType =
   | 'original'
+  | 'no_shadow'
   | 'magic_color'
   | 'bw'
   | 'grayscale'

@@ -865,8 +865,10 @@ export const RecentScreen: React.FC<{ navigation: any }> = ({ navigation }) => {
         itemCount={1}
         onCompress={async (zipName) => {
           if (compressTargetItem) {
-            await compressSelected(zipName, '/storage/emulated/0');
+            const targetPath = compressTargetItem.path;
+            const targetParent = targetPath.substring(0, targetPath.lastIndexOf('/')) || '/storage/emulated/0';
             setCompressTargetItem(null);
+            await compressSelected(zipName, targetParent, [targetPath]);
           }
         }}
         onCancel={() => setCompressTargetItem(null)}

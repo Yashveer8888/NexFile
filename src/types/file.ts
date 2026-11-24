@@ -67,6 +67,8 @@ export interface FileOperationProgress {
   percent: number;
   isIndeterminate: boolean;
   isCancelled: boolean;
+  title?: string;
+  isCompleted?: boolean;
 }
 
 export interface RecycleBinItem {

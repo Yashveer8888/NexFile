@@ -28,7 +28,7 @@ interface PdfState {
   addScannedPage: (uri: string) => void;
   addScannedPages: (uris: string[]) => void;
   removeScannedPage: (id: string) => void;
-  rotateScannedPage: (id: string) => void;
+  rotateScannedPage: (id: string, degrees?: number) => void;
   setPageFilter: (id: string, filter: DocumentFilterType) => void;
   setPageAdjustments: (id: string, brightness: number, contrast: number) => void;
   setPageCrop: (id: string, crop: PageCropCoords) => void;
@@ -104,10 +104,11 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     });
   },
 
-  rotateScannedPage: (id: string) => {
+  rotateScannedPage: (id: string, degrees?: number) => {
+    const deg = degrees !== undefined ? degrees : 90;
     set((state) => ({
       scannedPages: state.scannedPages.map((p) =>
-        p.id === id ? { ...p, rotation: (p.rotation + 90) % 360 } : p
+        p.id === id ? { ...p, rotation: (p.rotation + deg + 360) % 360 } : p
       ),
     }));
   },
