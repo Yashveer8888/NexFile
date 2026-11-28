@@ -38,6 +38,7 @@ import java.util.Locale
 @OptIn(UnstableApi::class)
 class NexVideoView(context: Context) : FrameLayout(context), TextureView.SurfaceTextureListener {
     private val textureView: TextureView = TextureView(context)
+    private var subtitleView: SubtitleView? = null
     private var exoPlayer: ExoPlayer? = null
     private var surface: Surface? = null
     private var videoPath: String? = null
@@ -63,7 +64,8 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
     private val audioTrackRefs = mutableListOf<TrackRef>()
     private val textTrackRefs = mutableListOf<TrackRef>()
     private var targetAudioTrackIndex = -1
-    private var targetSubtitleTrackIndex = -1
+    @Volatile private var targetSubtitleTrackIndex = -1
+    @Volatile private var isSubtitlesEnabled = false
 
     private val progressRunnable = object : Runnable {
         override fun run() {
@@ -91,6 +93,25 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
         textureView.surfaceTextureListener = this
         val lp = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         addView(textureView, lp)
+
+        subtitleView = SubtitleView(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            setApplyEmbeddedStyles(false)
+            setApplyEmbeddedFontSizes(false)
+            setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+            val style = CaptionStyleCompat(
+                Color.WHITE,
+                Color.parseColor("#99000000"),
+                Color.TRANSPARENT,
+                CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                Color.BLACK,
+                Typeface.DEFAULT_BOLD
+            )
+            setStyle(style)
+            setPadding(dpToPx(24), dpToPx(16), dpToPx(24), dpToPx(56))
+            visibility = View.GONE
+        }
+        addView(subtitleView)
     }
 
     private fun dpToPx(dp: Int): Int {
@@ -146,6 +167,12 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
             }
 
             val player = ExoPlayer.Builder(context).build()
+            val initialTrackParams = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .setIgnoredTextSelectionFlags(C.SELECTION_FLAG_DEFAULT or C.SELECTION_FLAG_FORCED)
+                .setPreferredTextLanguage(null)
+                .build()
+            player.trackSelectionParameters = initialTrackParams
             exoPlayer = player
             player.setVideoSurface(surface)
             player.repeatMode = if (isLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
@@ -160,31 +187,25 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
                 }
 
                 override fun onCues(cueGroup: CueGroup) {
-                    val cues = cueGroup.cues
-                    val sb = StringBuilder()
-                    for (cue in cues) {
-                        val t = cue.text
-                        if (!t.isNullOrEmpty()) {
-                            if (sb.isNotEmpty()) sb.append("\n")
-                            sb.append(t)
+                    if (!isSubtitlesEnabled || targetSubtitleTrackIndex < 0) {
+                        post {
+                            subtitleView?.setCues(emptyList())
+                            subtitleView?.visibility = View.GONE
                         }
+                        return
                     }
-                    val cueText = sb.toString()
+                    val rawCues = cueGroup.cues
                     post {
-                        if (targetSubtitleTrackIndex >= 0) {
+                        if (isSubtitlesEnabled && targetSubtitleTrackIndex >= 0 && rawCues.isNotEmpty()) {
+                            val cleanCues = rawCues.distinctBy { it.text?.toString()?.trim() }
+                            val singleCueList = if (cleanCues.size > 1) listOf(cleanCues.first()) else cleanCues
                             subtitleView?.visibility = View.VISIBLE
                             subtitleView?.bringToFront()
-                            subtitleView?.setCues(cues)
+                            subtitleView?.setCues(singleCueList)
                         } else {
                             subtitleView?.setCues(emptyList())
                             subtitleView?.visibility = View.GONE
                         }
-                        val event = Arguments.createMap().apply {
-                            putString("text", if (targetSubtitleTrackIndex >= 0) cueText else "")
-                        }
-                        (context as? ReactContext)
-                            ?.getJSModule(RCTEventEmitter::class.java)
-                            ?.receiveEvent(id, "topSubtitleCue", event)
                     }
                 }
 
@@ -232,16 +253,7 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
 
                 override fun onTracksChanged(tracks: Tracks) {
                     if (isPrepared) {
-                        val event = Arguments.createMap().apply {
-                            val dur = player.duration
-                            putDouble("duration", if (dur > 0) dur.toDouble() / 1000.0 else 0.0)
-                            putInt("width", videoWidth)
-                            putInt("height", videoHeight)
-                        }
-                        enumerateTracks(tracks, event)
-                        (context as? ReactContext)
-                            ?.getJSModule(RCTEventEmitter::class.java)
-                            ?.receiveEvent(id, "topVideoLoad", event)
+                        enumerateTracks(tracks, null)
                     }
                 }
 
@@ -283,7 +295,7 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
                                 .setMimeType(mime)
                                 .setLanguage(subLabel)
                                 .setLabel(subLabel)
-                                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                                .setSelectionFlags(0)
                                 .build()
                             subtitleConfigs.add(subConfig)
                         }
@@ -309,7 +321,7 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
         }
     }
 
-    private fun enumerateTracks(tracks: Tracks, event: com.facebook.react.bridge.WritableMap) {
+    private fun enumerateTracks(tracks: Tracks, event: com.facebook.react.bridge.WritableMap? = null) {
         audioTrackRefs.clear()
         textTrackRefs.clear()
 
@@ -387,18 +399,18 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
             }
         }
 
-        event.putArray("audioTracks", audioTracks)
-        event.putArray("subtitleTracks", subtitleTracks)
-        event.putBoolean("hasSubtitles", subtitleTracks.size() > 0)
+        event?.putArray("audioTracks", audioTracks)
+        event?.putArray("subtitleTracks", subtitleTracks)
+        event?.putBoolean("hasSubtitles", subtitleTracks.size() > 0)
 
-        // Automatically apply targeted tracks or auto-select first subtitle track
+        // Automatically apply targeted tracks
         if (targetAudioTrackIndex >= 0) {
             selectAudioTrack(targetAudioTrackIndex)
         }
-        if (targetSubtitleTrackIndex >= 0) {
+        if (isSubtitlesEnabled && targetSubtitleTrackIndex >= 0) {
             selectSubtitleTrack(targetSubtitleTrackIndex)
-        } else if (textTrackRefs.isNotEmpty()) {
-            selectSubtitleTrack(0)
+        } else {
+            selectSubtitleTrack(-1)
         }
     }
 
@@ -501,25 +513,38 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
     }
 
     fun selectSubtitleTrack(index: Int) {
-        targetSubtitleTrackIndex = index
-        val player = exoPlayer ?: return
-        try {
-            val builder = player.trackSelectionParameters.buildUpon()
-            builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
-            if (index < 0 || textTrackRefs.isEmpty() || index >= textTrackRefs.size) {
-                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                player.trackSelectionParameters = builder.build()
-                post {
-                    subtitleView?.visibility = View.GONE
-                    subtitleView?.setCues(emptyList())
-                    val event = Arguments.createMap().apply { putString("text", "") }
-                    (context as? ReactContext)
-                        ?.getJSModule(RCTEventEmitter::class.java)
-                        ?.receiveEvent(id, "topSubtitleCue", event)
+        val player = exoPlayer
+        if (index < 0 || textTrackRefs.isEmpty() || index >= textTrackRefs.size) {
+            isSubtitlesEnabled = false
+            targetSubtitleTrackIndex = -1
+            post {
+                subtitleView?.setCues(emptyList())
+                subtitleView?.visibility = View.GONE
+            }
+            if (player != null) {
+                try {
+                    val builder = player.trackSelectionParameters.buildUpon()
+                    builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    builder.setPreferredTextLanguage(null)
+                    builder.setIgnoredTextSelectionFlags(C.SELECTION_FLAG_DEFAULT or C.SELECTION_FLAG_FORCED)
+                    player.trackSelectionParameters = builder.build()
+                } catch (e: Exception) {
+                    android.util.Log.e("NexVideoView", "Failed to disable subtitle track", e)
                 }
-            } else {
+            }
+            return
+        }
+
+        isSubtitlesEnabled = true
+        targetSubtitleTrackIndex = index
+        if (player != null) {
+            try {
                 val ref = textTrackRefs[index]
+                val builder = player.trackSelectionParameters.buildUpon()
+                builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                builder.setIgnoredTextSelectionFlags(C.SELECTION_FLAG_DEFAULT or C.SELECTION_FLAG_FORCED)
                 builder.setOverrideForType(
                     TrackSelectionOverride(ref.group.mediaTrackGroup, listOf(ref.formatIndex))
                 )
@@ -531,9 +556,9 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
                     subtitleView?.visibility = View.VISIBLE
                     subtitleView?.bringToFront()
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("NexVideoView", "Failed to switch subtitle track to $index", e)
             }
-        } catch (e: Exception) {
-            android.util.Log.e("NexVideoView", "Failed to switch subtitle track to $index", e)
         }
     }
 
@@ -581,6 +606,8 @@ class NexVideoView(context: Context) : FrameLayout(context), TextureView.Surface
 
     fun releasePlayer() {
         handler.removeCallbacks(progressRunnable)
+        isSubtitlesEnabled = false
+        targetSubtitleTrackIndex = -1
         subtitleView?.setCues(emptyList())
         subtitleView?.visibility = View.GONE
         audioTrackRefs.clear()

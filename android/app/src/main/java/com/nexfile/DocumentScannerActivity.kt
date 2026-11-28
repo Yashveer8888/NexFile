@@ -1,6 +1,7 @@
 package com.nexfile
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -54,20 +55,39 @@ class DocumentScannerActivity : AppCompatActivity() {
     private lateinit var gridView: View
     private lateinit var frameGuideView: View
 
+    // Top Bar Actions
+    private lateinit var flashButtonText: TextView
+    private lateinit var bookSplitBtn: TextView
+    private lateinit var hdBadge: TextView
+    private lateinit var filterBtn: TextView
+    private lateinit var gridBtn: TextView
+    private lateinit var settingsBtn: TextView
+
     // Center Guides & Overlays
     private lateinit var searchingDocPill: TextView
     private lateinit var bookInstructionText: TextView
     private lateinit var idCardIntroCard: LinearLayout
     private lateinit var qrTorchButton: LinearLayout
-    private lateinit var qrLaserLine: View
+    private lateinit var qrTorchLabel: TextView
+    private var isTorchOn = false
+    private var qrLaserAnimator: ValueAnimator? = null
+
+    // ID Card Sub Mode Views
+    private lateinit var singleSideBox: FrameLayout
+    private lateinit var idCardBox: FrameLayout
+    private lateinit var passportBox: FrameLayout
+    private lateinit var singleSideLabel: TextView
+    private lateinit var idCardLabel: TextView
+    private lateinit var passportLabel: TextView
 
     // Bottom Controls
     private lateinit var captureRow: LinearLayout
     private lateinit var leftActionButton: FrameLayout
+    private lateinit var shutterContainer: FrameLayout
+    private lateinit var shutterOuterRing: FrameLayout
     private lateinit var rightActionButton: LinearLayout
     private lateinit var thumbnailImage: ImageView
     private lateinit var counterBadgeText: TextView
-    private lateinit var flashButtonText: TextView
 
     // Mode Selector: Book | To Text | Docs | ID Card | QR Code
     private val modes = listOf(
@@ -215,12 +235,12 @@ class DocumentScannerActivity : AppCompatActivity() {
             )
         }
 
-        // Top Bar (Flash, HD, Color, Grid, Settings)
+        // Top Bar (Flash, Book Split, HD, Color, Grid, Settings)
         val topBar = createTopBar()
         overlayContainer.addView(topBar)
 
         // Center Elements:
-        // A) "Searching doc..." pill for Docs mode
+        // A) "Searching doc..." pill for Docs mode (Image 2)
         searchingDocPill = TextView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -231,7 +251,7 @@ class DocumentScannerActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#1E293B"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dpToPx(24), dpToPx(10), dpToPx(24), dpToPx(10))
+            setPadding(dpToPx(28), dpToPx(12), dpToPx(28), dpToPx(12))
             background = GradientDrawable().apply {
                 setColor(Color.WHITE)
                 cornerRadius = dpToPx(24).toFloat()
@@ -240,33 +260,34 @@ class DocumentScannerActivity : AppCompatActivity() {
         }
         overlayContainer.addView(searchingDocPill)
 
-        // B) Book mode rotated guidance text
+        // B) Book mode rotated guidance text (Image 1)
         bookInstructionText = TextView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dpToPx(300),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER_VERTICAL or Gravity.START
             ).apply {
-                marginStart = dpToPx(12)
+                marginStart = -dpToPx(75)
             }
+            rotation = -90f
             text = "Please hold the device horizontally and keep it parallel to the book, match the green line with the book's binding line"
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8))
+            setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#99000000"))
                 cornerRadius = dpToPx(8).toFloat()
             }
-            maxWidth = dpToPx(220)
+            gravity = Gravity.CENTER
             visibility = if (scanMode == "book") View.VISIBLE else View.GONE
         }
         overlayContainer.addView(bookInstructionText)
 
-        // C) QR Code Turn Light On button
+        // C) QR Code Turn Light On button (Image 4)
         qrTorchButton = createQrTorchButton()
         overlayContainer.addView(qrTorchButton)
 
-        // D) ID Card Intro Card (Example on A4 paper)
+        // D) ID Card Intro Card (Example on A4 paper + submodes) (Image 5)
         idCardIntroCard = createIdCardIntroCard()
         overlayContainer.addView(idCardIntroCard)
 
@@ -276,9 +297,10 @@ class DocumentScannerActivity : AppCompatActivity() {
 
         root.addView(overlayContainer)
         setContentView(root)
+        updateTopBarUi()
     }
 
-    // Top Bar Matching Image 2 & 3
+    // Top Bar Matching Image 1, 2, 3, 5
     private fun createTopBar(): LinearLayout {
         return LinearLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -303,13 +325,30 @@ class DocumentScannerActivity : AppCompatActivity() {
             }
             addView(flashButtonText)
 
+            // 2. Book Split Mode Toggle (Image 1: A⋮B)
+            bookSplitBtn = TextView(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(44), dpToPx(38)).apply {
+                    marginStart = dpToPx(8)
+                }
+                gravity = Gravity.CENTER
+                text = "A⋮B"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                typeface = Typeface.DEFAULT_BOLD
+                setOnClickListener {
+                    Toast.makeText(this@DocumentScannerActivity, "Two-Page Book Mode Active", Toast.LENGTH_SHORT).show()
+                }
+                visibility = if (scanMode == "book") View.VISIBLE else View.GONE
+            }
+            addView(bookSplitBtn)
+
             // Spacer
             addView(View(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
             })
 
-            // 2. HD Quality Indicator
-            val hdBadge = TextView(this@DocumentScannerActivity).apply {
+            // 3. HD Quality Indicator
+            hdBadge = TextView(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(22)).apply {
                     marginEnd = dpToPx(16)
                 }
@@ -326,8 +365,8 @@ class DocumentScannerActivity : AppCompatActivity() {
             }
             addView(hdBadge)
 
-            // 3. Color / Filter Icon (3 overlapping circles symbol)
-            val filterBtn = TextView(this@DocumentScannerActivity).apply {
+            // 4. Color / Filter Icon (3 overlapping circles symbol - Image 2)
+            filterBtn = TextView(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(38)).apply {
                     marginEnd = dpToPx(12)
                 }
@@ -341,8 +380,8 @@ class DocumentScannerActivity : AppCompatActivity() {
             }
             addView(filterBtn)
 
-            // 4. Grid Icon
-            val gridBtn = TextView(this@DocumentScannerActivity).apply {
+            // 5. Grid Icon
+            gridBtn = TextView(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(38)).apply {
                     marginEnd = dpToPx(12)
                 }
@@ -357,8 +396,8 @@ class DocumentScannerActivity : AppCompatActivity() {
             }
             addView(gridBtn)
 
-            // 5. Settings Gear
-            val settingsBtn = TextView(this@DocumentScannerActivity).apply {
+            // 6. Settings Gear
+            settingsBtn = TextView(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(38))
                 gravity = Gravity.CENTER
                 text = "⚙"
@@ -372,22 +411,30 @@ class DocumentScannerActivity : AppCompatActivity() {
         }
     }
 
-    // QR Mode Torch Button
+    private fun updateTopBarUi() {
+        bookSplitBtn.visibility = if (scanMode == "book") View.VISIBLE else View.GONE
+        hdBadge.visibility = if (scanMode == "qrcode") View.GONE else View.VISIBLE
+        filterBtn.visibility = if (scanMode == "doc" || scanMode == "totext") View.VISIBLE else View.GONE
+        gridBtn.visibility = if (scanMode == "qrcode") View.GONE else View.VISIBLE
+        settingsBtn.visibility = if (scanMode == "doc" || scanMode == "totext") View.VISIBLE else View.GONE
+    }
+
+    // QR Mode Torch Button (Image 4)
     private fun createQrTorchButton(): LinearLayout {
         return LinearLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                dpToPx(38),
+                dpToPx(40),
                 Gravity.CENTER_HORIZONTAL
             ).apply {
-                topMargin = dpToPx(460)
+                topMargin = dpToPx(470)
             }
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dpToPx(18), 0, dpToPx(18), 0)
+            setPadding(dpToPx(20), 0, dpToPx(20), 0)
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#66333333"))
-                cornerRadius = dpToPx(19).toFloat()
+                setColor(Color.parseColor("#77333333"))
+                cornerRadius = dpToPx(20).toFloat()
             }
             visibility = if (scanMode == "qrcode") View.VISIBLE else View.GONE
 
@@ -396,16 +443,18 @@ class DocumentScannerActivity : AppCompatActivity() {
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                 setPadding(0, 0, dpToPx(6), 0)
             }
-            val label = TextView(this@DocumentScannerActivity).apply {
+            qrTorchLabel = TextView(this@DocumentScannerActivity).apply {
                 text = "Turn light on"
                 setTextColor(Color.WHITE)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             }
             addView(icon)
-            addView(label)
+            addView(qrTorchLabel)
 
             setOnClickListener {
-                cycleFlashMode()
+                isTorchOn = !isTorchOn
+                cameraControl?.enableTorch(isTorchOn)
+                qrTorchLabel.text = if (isTorchOn) "Turn light off" else "Turn light on"
             }
         }
     }
@@ -418,7 +467,7 @@ class DocumentScannerActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER_HORIZONTAL
             ).apply {
-                topMargin = dpToPx(80)
+                topMargin = dpToPx(70)
             }
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -428,11 +477,11 @@ class DocumentScannerActivity : AppCompatActivity() {
             val paperFrame = LinearLayout(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dpToPx(340)
+                    dpToPx(310)
                 )
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(dpToPx(20), dpToPx(16), dpToPx(20), dpToPx(16))
+                setPadding(dpToPx(18), dpToPx(14), dpToPx(18), dpToPx(14))
                 background = GradientDrawable().apply {
                     setColor(Color.WHITE)
                     cornerRadius = dpToPx(12).toFloat()
@@ -445,11 +494,11 @@ class DocumentScannerActivity : AppCompatActivity() {
                         ViewGroup.LayoutParams.WRAP_CONTENT
                     ).apply {
                         gravity = Gravity.END
-                        bottomMargin = dpToPx(8)
+                        bottomMargin = dpToPx(6)
                     }
                     text = "A4 paper example"
                     setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                     setPadding(dpToPx(8), dpToPx(2), dpToPx(8), dpToPx(2))
                     background = GradientDrawable().apply {
                         setColor(Color.parseColor("#666666"))
@@ -460,8 +509,8 @@ class DocumentScannerActivity : AppCompatActivity() {
 
                 // ID Card Front Mockup
                 val frontCard = LinearLayout(this@DocumentScannerActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(dpToPx(220), dpToPx(100)).apply {
-                        bottomMargin = dpToPx(14)
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(200), dpToPx(88)).apply {
+                        bottomMargin = dpToPx(12)
                     }
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
@@ -472,7 +521,7 @@ class DocumentScannerActivity : AppCompatActivity() {
                     val t = TextView(this@DocumentScannerActivity).apply {
                         text = "🪪 ID CARD (FRONT)"
                         setTextColor(Color.parseColor("#004D40"))
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                         typeface = Typeface.DEFAULT_BOLD
                     }
                     addView(t)
@@ -481,8 +530,8 @@ class DocumentScannerActivity : AppCompatActivity() {
 
                 // ID Card Back Mockup
                 val backCard = LinearLayout(this@DocumentScannerActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(dpToPx(220), dpToPx(100)).apply {
-                        bottomMargin = dpToPx(12)
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(200), dpToPx(88)).apply {
+                        bottomMargin = dpToPx(10)
                     }
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
@@ -493,7 +542,7 @@ class DocumentScannerActivity : AppCompatActivity() {
                     val t = TextView(this@DocumentScannerActivity).apply {
                         text = "💳 ID CARD (BACK)"
                         setTextColor(Color.parseColor("#37474F"))
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                         typeface = Typeface.DEFAULT_BOLD
                     }
                     addView(t)
@@ -502,9 +551,9 @@ class DocumentScannerActivity : AppCompatActivity() {
 
                 // Description text
                 val desc = TextView(this@DocumentScannerActivity).apply {
-                    text = "A must-have feature! You can make a 2-sided e-copy of an ID card in 1 min. 100% ready for printing. Watermark protection is also available."
+                    text = "A must-have feature! You can make a 2-sided e-copy of an ID card in 1 min. 100% ready for printing. Watermark protection is also available. Store only, the content will not be automatically recognized"
                     setTextColor(Color.parseColor("#666666"))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                     gravity = Gravity.CENTER
                 }
                 addView(desc)
@@ -515,9 +564,9 @@ class DocumentScannerActivity : AppCompatActivity() {
             val makeBtn = TextView(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dpToPx(46)
+                    dpToPx(44)
                 ).apply {
-                    topMargin = dpToPx(16)
+                    topMargin = dpToPx(14)
                 }
                 gravity = Gravity.CENTER
                 text = "Make it now"
@@ -532,11 +581,152 @@ class DocumentScannerActivity : AppCompatActivity() {
                     isIdCardLiveScanning = true
                     idCardIntroCard.visibility = View.GONE
                     frameGuideView.invalidate()
-                    Toast.makeText(this@DocumentScannerActivity, "Position Front Side of ID Card", Toast.LENGTH_SHORT).show()
+                    val msg = when (idCardSubMode) {
+                        "single" -> "Position ID Card"
+                        "passport" -> "Position Passport Page"
+                        else -> "Position Front Side of ID Card"
+                    }
+                    Toast.makeText(this@DocumentScannerActivity, msg, Toast.LENGTH_SHORT).show()
                 }
             }
             addView(makeBtn)
+
+            // Sub-mode tabs row matching Image 5: Single Side | ID Card | Passport
+            val subModesRow = LinearLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dpToPx(14)
+                }
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+
+            // 1. Single Side
+            val singleItem = LinearLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(76), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginEnd = dpToPx(16)
+                }
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setOnClickListener {
+                    idCardSubMode = "single"
+                    updateIdCardSubModesUi()
+                }
+            }
+            singleSideBox = FrameLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(56), dpToPx(40))
+                val icon = TextView(this@DocumentScannerActivity).apply {
+                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                    gravity = Gravity.CENTER
+                    text = "🪪"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                }
+                addView(icon)
+            }
+            singleSideLabel = TextView(this@DocumentScannerActivity).apply {
+                text = "Single Side"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                gravity = Gravity.CENTER
+            }
+            singleItem.addView(singleSideBox)
+            singleItem.addView(singleSideLabel)
+            subModesRow.addView(singleItem)
+
+            // 2. ID Card
+            val idCardItem = LinearLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(76), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginEnd = dpToPx(16)
+                }
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setOnClickListener {
+                    idCardSubMode = "idcard"
+                    updateIdCardSubModesUi()
+                }
+            }
+            idCardBox = FrameLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(56), dpToPx(40))
+                val icon = TextView(this@DocumentScannerActivity).apply {
+                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                    gravity = Gravity.CENTER
+                    text = "📑"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                }
+                addView(icon)
+            }
+            idCardLabel = TextView(this@DocumentScannerActivity).apply {
+                text = "ID Card"
+                setTextColor(Color.parseColor("#00C853"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+            }
+            idCardItem.addView(idCardBox)
+            idCardItem.addView(idCardLabel)
+            subModesRow.addView(idCardItem)
+
+            // 3. Passport
+            val passportItem = LinearLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(76), ViewGroup.LayoutParams.WRAP_CONTENT)
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setOnClickListener {
+                    idCardSubMode = "passport"
+                    updateIdCardSubModesUi()
+                }
+            }
+            passportBox = FrameLayout(this@DocumentScannerActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(56), dpToPx(40))
+                val icon = TextView(this@DocumentScannerActivity).apply {
+                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                    gravity = Gravity.CENTER
+                    text = "📘"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                }
+                addView(icon)
+            }
+            passportLabel = TextView(this@DocumentScannerActivity).apply {
+                text = "Passport"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                gravity = Gravity.CENTER
+            }
+            passportItem.addView(passportBox)
+            passportItem.addView(passportLabel)
+            subModesRow.addView(passportItem)
+
+            addView(subModesRow)
+            updateIdCardSubModesUi()
         }
+    }
+
+    private fun updateIdCardSubModesUi() {
+        val greenColor = Color.parseColor("#00C853")
+        val normalBg = GradientDrawable().apply {
+            setColor(Color.parseColor("#2A2C32"))
+            cornerRadius = dpToPx(4).toFloat()
+            setStroke(dpToPx(1), Color.parseColor("#444444"))
+        }
+        val activeBg = GradientDrawable().apply {
+            setColor(Color.parseColor("#2A2C32"))
+            cornerRadius = dpToPx(4).toFloat()
+            setStroke(dpToPx(2), greenColor)
+        }
+
+        singleSideBox.background = if (idCardSubMode == "single") activeBg else normalBg
+        singleSideLabel.setTextColor(if (idCardSubMode == "single") greenColor else Color.WHITE)
+        singleSideLabel.typeface = if (idCardSubMode == "single") Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+
+        idCardBox.background = if (idCardSubMode == "idcard") activeBg else normalBg
+        idCardLabel.setTextColor(if (idCardSubMode == "idcard") greenColor else Color.WHITE)
+        idCardLabel.typeface = if (idCardSubMode == "idcard") Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+
+        passportBox.background = if (idCardSubMode == "passport") activeBg else normalBg
+        passportLabel.setTextColor(if (idCardSubMode == "passport") greenColor else Color.WHITE)
+        passportLabel.typeface = if (idCardSubMode == "passport") Typeface.DEFAULT_BOLD else Typeface.DEFAULT
     }
 
     private fun createBottomSection(): LinearLayout {
@@ -612,6 +802,7 @@ class DocumentScannerActivity : AppCompatActivity() {
         if (scanMode == newMode) return
         scanMode = newMode
         updateModePillsUi()
+        updateTopBarUi()
 
         // Update Overlays
         searchingDocPill.visibility = if (scanMode == "doc" && capturedPaths.isEmpty()) View.VISIBLE else View.GONE
@@ -665,11 +856,11 @@ class DocumentScannerActivity : AppCompatActivity() {
             addView(leftActionButton)
 
             // Center Shutter Button
-            val shutterContainer = FrameLayout(this@DocumentScannerActivity).apply {
+            shutterContainer = FrameLayout(this@DocumentScannerActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             }
 
-            val shutterOuterRing = FrameLayout(this@DocumentScannerActivity).apply {
+            shutterOuterRing = FrameLayout(this@DocumentScannerActivity).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     dpToPx(76),
                     dpToPx(76),
@@ -714,6 +905,14 @@ class DocumentScannerActivity : AppCompatActivity() {
     private fun updateCaptureRowUi() {
         leftActionButton.removeAllViews()
         rightActionButton.removeAllViews()
+
+        if (scanMode == "qrcode") {
+            shutterContainer.visibility = View.INVISIBLE
+            rightActionButton.visibility = View.INVISIBLE
+        } else {
+            shutterContainer.visibility = View.VISIBLE
+            rightActionButton.visibility = View.VISIBLE
+        }
 
         if (capturedPaths.isEmpty()) {
             // LEFT: Close ✕ (Image 2)
@@ -866,6 +1065,24 @@ class DocumentScannerActivity : AppCompatActivity() {
     // Viewfinder Overlays
     private fun createDocumentFrameGuide(): View {
         return object : View(this) {
+            private var laserYRatio = 0.1f
+
+            init {
+                qrLaserAnimator = ValueAnimator.ofFloat(0.08f, 0.92f).apply {
+                    duration = 1800
+                    repeatCount = ValueAnimator.INFINITE
+                    repeatMode = ValueAnimator.REVERSE
+                    interpolator = LinearInterpolator()
+                    addUpdateListener {
+                        laserYRatio = it.animatedValue as Float
+                        if (scanMode == "qrcode") {
+                            invalidate()
+                        }
+                    }
+                    start()
+                }
+            }
+
             private val greenFramePaint = Paint().apply {
                 color = Color.parseColor("#00C853") // OKEN Green
                 style = Paint.Style.STROKE
@@ -925,8 +1142,8 @@ class DocumentScannerActivity : AppCompatActivity() {
                         canvas.drawLine(right, bottom, right - cLen, bottom, cornerPaint)
                         canvas.drawLine(right, bottom, right, bottom - cLen, cornerPaint)
 
-                        // Center green laser line
-                        val laserY = top + size / 2f
+                        // Center green laser line sweeping up and down
+                        val laserY = top + size * laserYRatio
                         canvas.drawLine(left + dpToPx(8), laserY, right - dpToPx(8), laserY, qrLaserPaint)
                     }
                     "idcard" -> {
@@ -1097,10 +1314,14 @@ class DocumentScannerActivity : AppCompatActivity() {
                         frameGuideView.invalidate()
 
                         if (scanMode == "idcard") {
-                            if (capturedPaths.size == 1) {
-                                Toast.makeText(this@DocumentScannerActivity, "Front saved! Now scan Back Side", Toast.LENGTH_SHORT).show()
-                            } else if (capturedPaths.size >= 2) {
+                            if (idCardSubMode == "single" || idCardSubMode == "passport") {
                                 finishWithResults()
+                            } else {
+                                if (capturedPaths.size == 1) {
+                                    Toast.makeText(this@DocumentScannerActivity, "Front saved! Now scan Back Side", Toast.LENGTH_SHORT).show()
+                                } else if (capturedPaths.size >= 2) {
+                                    finishWithResults()
+                                }
                             }
                         }
                     }
@@ -1246,6 +1467,7 @@ class DocumentScannerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        qrLaserAnimator?.cancel()
         cameraExecutor.shutdown()
     }
 }

@@ -141,12 +141,12 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
   const grantPageYRef = useRef<number>(0);
   const initialGestureValRef = useRef<number>(0);
 
-  // Subtitles (Real tracks only, Default Auto-Selected if present)
+  // Subtitles (Real tracks only, Default to Off until user explicitly enables)
   const [hasSubtitles, setHasSubtitles] = useState<boolean>(false);
   const [subtitleTracks, setSubtitleTracks] = useState<{ index: number; language: string }[]>([]);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState<number>(-1);
   const [selectedSubtitleLang, setSelectedSubtitleLang] = useState<string>('Off');
-  const [currentSubtitleText, setCurrentSubtitleText] = useState<string>('');
+  const userExplicitlyTurnedOffSubtitlesRef = useRef<boolean>(true);
 
   // UI / Controls Visibility & Screen Lock
   const [showControls, setShowControls] = useState<boolean>(true);
@@ -337,18 +337,21 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
       setSelectedAudioTrack(-1);
     }
 
-    // Subtitle tracks
+    // Subtitle tracks (Default to OFF unless user actively selects a track)
     if (event.nativeEvent.subtitleTracks && event.nativeEvent.subtitleTracks.length > 0) {
       setSubtitleTracks(event.nativeEvent.subtitleTracks);
       setHasSubtitles(true);
-      setSelectedSubtitleTrack(0);
-      setSelectedSubtitleLang(event.nativeEvent.subtitleTracks[0].language);
+      if (!userExplicitlyTurnedOffSubtitlesRef.current && selectedSubtitleTrack >= 0 && selectedSubtitleTrack < event.nativeEvent.subtitleTracks.length) {
+        setSelectedSubtitleLang(event.nativeEvent.subtitleTracks[selectedSubtitleTrack].language);
+      } else {
+        setSelectedSubtitleTrack(-1);
+        setSelectedSubtitleLang('Off');
+      }
     } else {
       setSubtitleTracks([]);
       setHasSubtitles(false);
       setSelectedSubtitleTrack(-1);
       setSelectedSubtitleLang('Off');
-      setCurrentSubtitleText('');
     }
   };
 
@@ -492,6 +495,8 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
     currentTimeRef.current = prevPos;
     isAwaitingInitialResumeRef.current = prevPos > 2;
     setSeekTarget(prevPos);
+    setSelectedSubtitleTrack(-1);
+    setSelectedSubtitleLang('Off');
     progressAnim.stopAnimation();
     progressAnim.setValue(0);
     setIsPlaying(true);
@@ -518,6 +523,8 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
     currentTimeRef.current = nextPos;
     isAwaitingInitialResumeRef.current = nextPos > 2;
     setSeekTarget(nextPos);
+    setSelectedSubtitleTrack(-1);
+    setSelectedSubtitleLang('Off');
     progressAnim.stopAnimation();
     progressAnim.setValue(0);
     setIsPlaying(true);
@@ -935,18 +942,8 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
             onVideoLoad={handleVideoLoad}
             onVideoProgress={handleVideoProgress}
             onVideoEnd={handleVideoEnd}
-            onSubtitleCue={(e) => setCurrentSubtitleText(e.nativeEvent.text || '')}
           />
         </View>
-
-        {/* Floating Subtitle Overlay */}
-        {selectedSubtitleTrack !== -1 && currentSubtitleText.trim().length > 0 && (
-          <View style={styles.subtitlesContainer} pointerEvents="none">
-            <View style={styles.subtitlesBox}>
-              <Text style={styles.subtitlesText}>{currentSubtitleText.trim()}</Text>
-            </View>
-          </View>
-        )}
 
         {/* Double-tap Skip Animated Feedback Ripples */}
         {doubleTapFeedback === 'left' && (
@@ -1293,10 +1290,11 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
             <TouchableOpacity
               style={[styles.modalItemRow, selectedSubtitleTrack === -1 && styles.activeModalRow]}
               onPress={() => {
+                userExplicitlyTurnedOffSubtitlesRef.current = true;
                 setSelectedSubtitleTrack(-1);
                 setSelectedSubtitleLang('Off');
                 setSubtitleModalVisible(false);
-                ToastAndroid.show('Subtitles turned off', ToastAndroid.SHORT);
+                ToastAndroid.show('Subtitles Off', ToastAndroid.SHORT);
               }}
             >
               <Text
@@ -1317,6 +1315,7 @@ export const MediaPlayerScreen: React.FC<{ navigation: any; route: any }> = ({
                   key={sub.index}
                   style={[styles.modalItemRow, selectedSubtitleTrack === sub.index && styles.activeModalRow]}
                   onPress={() => {
+                    userExplicitlyTurnedOffSubtitlesRef.current = false;
                     setSelectedSubtitleTrack(sub.index);
                     setSelectedSubtitleLang(sub.language);
                     setSubtitleModalVisible(false);
